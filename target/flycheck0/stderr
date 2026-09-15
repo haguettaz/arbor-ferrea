@@ -1,0 +1,100 @@
+   0.039554959s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("sam_rs", ["lib"], "/Users/haguettaz/Documents/prog/isam2-rs/src/lib.rs", Edition2024) }
+   0.039578625s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-78703b753727989d/lib-sam_rs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.048089084s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("sam_rs", ["lib"], "/Users/haguettaz/Documents/prog/isam2-rs/src/lib.rs", Edition2024) }
+   0.048104667s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-c3a9e96d4c97f397/test-lib-sam_rs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.048638792s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: false }/TargetInner { name: "sam-rs", doc: true, ..: with_path("/Users/haguettaz/Documents/prog/isam2-rs/src/main.rs", Edition2024) }
+   0.048647084s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-96ced98a009f7e6e/bin-sam-rs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.048994084s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: true }/TargetInner { name: "sam-rs", doc: true, ..: with_path("/Users/haguettaz/Documents/prog/isam2-rs/src/main.rs", Edition2024) }
+   0.048999542s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-131b4b11a42ab642/test-bin-sam-rs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+    Checking sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)
+error: could not compile `sam-rs` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `sam-rs` (lib) due to 2 previous errors
