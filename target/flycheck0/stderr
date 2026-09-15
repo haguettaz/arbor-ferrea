@@ -1,5 +1,5 @@
-   0.039554959s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("sam_rs", ["lib"], "/Users/haguettaz/Documents/prog/isam2-rs/src/lib.rs", Edition2024) }
-   0.039578625s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-78703b753727989d/lib-sam_rs`
+   0.034170042s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("sam_rs", ["lib"], "/Users/haguettaz/Documents/prog/isam2-rs/src/lib.rs", Edition2024) }
+   0.034190834s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-78703b753727989d/lib-sam_rs`
 
 Caused by:
     No such file or directory (os error 2)
@@ -22,8 +22,8 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.048089084s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("sam_rs", ["lib"], "/Users/haguettaz/Documents/prog/isam2-rs/src/lib.rs", Edition2024) }
-   0.048104667s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-c3a9e96d4c97f397/test-lib-sam_rs`
+   0.042058709s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("sam_rs", ["lib"], "/Users/haguettaz/Documents/prog/isam2-rs/src/lib.rs", Edition2024) }
+   0.042072334s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam_rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-c3a9e96d4c97f397/test-lib-sam_rs`
 
 Caused by:
     No such file or directory (os error 2)
@@ -46,8 +46,8 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.048638792s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: false }/TargetInner { name: "sam-rs", doc: true, ..: with_path("/Users/haguettaz/Documents/prog/isam2-rs/src/main.rs", Edition2024) }
-   0.048647084s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-96ced98a009f7e6e/bin-sam-rs`
+   0.042500042s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: false }/TargetInner { name: "sam-rs", doc: true, ..: with_path("/Users/haguettaz/Documents/prog/isam2-rs/src/main.rs", Edition2024) }
+   0.042508125s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-96ced98a009f7e6e/bin-sam-rs`
 
 Caused by:
     No such file or directory (os error 2)
@@ -70,8 +70,8 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.048994084s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: true }/TargetInner { name: "sam-rs", doc: true, ..: with_path("/Users/haguettaz/Documents/prog/isam2-rs/src/main.rs", Edition2024) }
-   0.048999542s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-131b4b11a42ab642/test-bin-sam-rs`
+   0.042767209s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint: fingerprint error for sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs)/Check { test: true }/TargetInner { name: "sam-rs", doc: true, ..: with_path("/Users/haguettaz/Documents/prog/isam2-rs/src/main.rs", Edition2024) }
+   0.042771334s  INFO prepare_target{force=false package_id=sam-rs v0.1.0 (/Users/haguettaz/Documents/prog/isam2-rs) target="sam-rs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/haguettaz/Documents/prog/isam2-rs/target/debug/.fingerprint/sam-rs-131b4b11a42ab642/test-bin-sam-rs`
 
 Caused by:
     No such file or directory (os error 2)

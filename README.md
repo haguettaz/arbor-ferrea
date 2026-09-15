@@ -1,8 +1,5 @@
 # 🦀 sam-rs
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)]()
-
 A high-performance Rust library for non-linear factor graph optimization, state estimation, and Simultaneous Localization and Mapping (SLAM).
 
 `sam-rs` is heavily inspired by [GTSAM](https://gtsam.org), designed from the ground up to leverage Rust’s type safety, memory guarantees, and modern linear algebra ecosystem.
@@ -36,14 +33,3 @@ A high-performance Rust library for non-linear factor graph optimization, state 
    M. Kaess, A. Ranganathan, and F. Dellaert, *"iSAM: Incremental Smoothing and Mapping,"* *IEEE Transactions on Robotics (T-RO)*, 2008.
 3. **iSAM2**  
    M. Kaess, H. Johannsson, R. Roberts, V. Ila, J. Leonard, and F. Dellaert, *"iSAM2: Incremental Smoothing and Mapping Using the Bayes Tree,"* *The International Journal of Robotics Research (IJRR)*, 31(2), pp. 216–235, 2012.
-
----
-
-## 📄 License
-
-Dual-licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
