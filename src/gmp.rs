@@ -1,8 +1,3 @@
-// use std::collections::HashMap;
-// use std::hash::Hash;
-
-// use nalgebra::{Cholesky, Mat, MatView, Col, ColView, ColViewMut, stack};
-
 use dyn_stack::{MemBuffer, MemStack};
 use eros::Result;
 use faer::linalg::{cholesky::llt, matmul::matmul};
@@ -404,9 +399,8 @@ impl ConstraintBlock {
         // Compute xibz = xiby - wby a h (xifx + a.t xiby) = xiby - wby_a h_xitx
         // where h_xitx = h (xifx + a.t xiby) with hinv = (wfx + a.t wby a)
         self.h_xitx.copy_from(&self.xitx);
-        llt::solve::solve_in_place_with_conj(
+        llt::solve::solve_in_place(
             self.rtx.as_ref(),
-            Conj::No,
             self.h_xitx.as_mat_mut(),
             Par::Seq,
             &mut stack,
@@ -423,9 +417,8 @@ impl ConstraintBlock {
 
         // Compute wbz = wby - wby a h a.t wby
         self.h_at_wby.copy_from(&self.wby_a.transpose());
-        llt::solve::solve_in_place_with_conj(
+        llt::solve::solve_in_place(
             self.rtx.as_ref(),
-            Conj::No,
             self.h_at_wby.as_mut(),
             Par::Seq,
             &mut stack,
@@ -458,13 +451,7 @@ impl ConstraintBlock {
             Par::Seq,
         );
 
-        llt::solve::solve_in_place_with_conj(
-            self.rtx.as_ref(),
-            Conj::No,
-            x.as_mat_mut(),
-            Par::Seq,
-            &mut stack,
-        );
+        llt::solve::solve_in_place(self.rtx.as_ref(), x.as_mat_mut(), Par::Seq, &mut stack);
         Ok(())
     }
 }
