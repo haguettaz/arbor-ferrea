@@ -13,6 +13,7 @@ A high-performance Rust library for non-linear factor graph optimization, state 
 - [ ] Clique amalgamation and chordal Bayes tree assembly
 - [ ] Incremental updates with fluid relinearization (iSAM2)
 - [ ] Variable reordering heuristics (COLAMD / Constrained COLAMD)
+- [ ] Parallel solver execution (on parallel branches)
 
 ### Geometry & Lie Groups
 - [ ] $SO(2)$ / $SE(2)$ manifold representations (2D SLAM)

@@ -4,5 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-num-traits = "0.2.19"
+# num-traits = "0.2.19"
 nalgebra = "0.35.0"
+dyn-stack = "0.13.2"
+faer="0.24.4"
+eros="0.8.0"
+# faer-traits="0.24.0"
+# goatd = "0.2.1"
