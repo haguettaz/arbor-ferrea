@@ -1,276 +1,60 @@
+use std::fmt::Display;
+use std::hash::Hash;
+
+use anyhow::{Context, Result, bail};
 use dyn_stack::{MemBuffer, MemStack};
-use eros::Result;
 use faer::linalg::{cholesky::llt, matmul::matmul};
 use faer::prelude::*;
-use faer::{Accum, Conj, Par, Spec};
+use faer::{Accum, Par, Spec};
+use std::collections::HashSet;
 
-// pub struct GaussianFactor<T> {
-//     vars: Vec<(T, usize)>, // (label, dim)
-//     var_range: HashMap<T, (usize, usize)>,
-//     mean: Col<f64>,
-//     covariance: Mat<f64>,
-// }
+use crate::vars::VarInfo;
 
-// impl<T: Clone + PartialEq + Eq + Hash> GaussianFactor<T> {
-//     pub fn new(vars: Vec<(T, usize)>, mean: Col<f64>, covariance: Mat<f64>) -> Self {
-//         let var_range = vars
-//             .iter()
-//             .scan(0, |acc, (name, dim)| {
-//                 let start = *acc;
-//                 *acc += *dim;
-//                 Some((name.clone(), (start, *dim)))
-//             })
-//             .collect::<HashMap<_, (_, _)>>();
-//         Self {
-//             vars,
-//             var_range,
-//             mean,
-//             covariance,
-//         }
-//     }
+/// A linear block Y = A X in a Gaussian factor graph.
+/// X is the main variable constrained through Y by A.
+/// Note: in a future version, we might generalize A to a real-valued bilinear operator acting on real-valued vectors and symmetric matrices.
+pub struct AXGaussBlock<T> {
+    // ---- Labels and Sizes ----
+    pub info_x: Vec<(VarInfo<T>, usize)>, // the informations about the x variables and their positions in the A matrix
 
-//     pub fn contains(&self, label: &T) -> bool {
-//         self.vars.iter().any(|var| var.0 == *label)
-//     }
+    // ---- Logical Dimensions ----
+    pub dim_x: usize, // note: should be equal to the total size of the x variables
+    pub dim_y: usize,
 
-//     pub fn vars_iter(&self) -> impl Iterator<Item = &(T, usize)> {
-//         self.vars.iter()
-//     }
-// }
+    // ---- Matrices and Vectors ----
+    pub a: Mat<f64>,    // the matrix A with dimensions (dim_y, dim_x)
+    pub xiby: Col<f64>, // y backward weighted mean vector with shape (dim_y)
+    pub wby: Mat<f64>,  // y backward precision matrix with shape (dim_y, dim_y)
+}
 
-// pub struct LinearGaussianFactor<T> {
-//     /// A linear Gaussian factor representing || mat * vars - mean ||_covariance^2
-//     /// Should we rather use weighted means and precisions?
-//     vars: HashMap<T, (usize, usize)>, // (var: (offset, dim))
-//     mat: Mat<f64>,
-//     // var_range: HashMap<T, (usize, usize)>, // column range for each variable (first, length)
-//     mean: Col<f64>,
-//     covariance: Mat<f64>,
-// }
+impl<T: PartialEq + Clone> AXGaussBlock<T> {
+    pub fn new(
+        info_x: Vec<(VarInfo<T>, usize)>,
+        dim_x: usize,
+        dim_y: usize,
+        a: Mat<f64>,
+        xiby: Col<f64>,
+        wby: Mat<f64>,
+    ) -> Self {
+        Self {
+            info_x,
+            dim_x,
+            dim_y,
+            a,
+            xiby,
+            wby,
+        }
+    }
+}
 
-// impl<T: Clone + PartialEq + Eq + Hash> LinearGaussianFactor<T> {
-//     pub fn new(
-//         vars: HashMap<T, usize>, // (name: dim)
-//         mat: Mat<f64>,
-//         mean: Col<f64>,
-//         covariance: Mat<f64>,
-//     ) -> Self {
-//         let vars = vars
-//             .into_iter()
-//             .scan(0, |acc, (name, dim)| {
-//                 let start = *acc;
-//                 *acc += dim;
-//                 Some((name, (start, dim)))
-//             })
-//             .collect::<HashMap<_, (_, _)>>();
-//         Self {
-//             vars,
-//             mat,
-//             mean,
-//             covariance,
-//         }
-//     }
+/// An elimination block in a Gaussian factor graph.
+/// The main variable X and separator variable S are associated with the matrices A and B, respectively.
+/// For convenience, the virtual variables Y := A X + Z and Z := B S are introduced.
+pub struct AXBSGaussBlock<T> {
+    // ---- Labels and Sizes ----
+    pub info_x: VarInfo<T>, // the informations about the x variable
+    pub info_s: Vec<(VarInfo<T>, usize)>, // the informations about the s variables and their positions in the B matrix
 
-//     pub fn combine(&self, other: &Self) -> Self {
-//         // Collect all unique variables and determine unique column layout.
-//         let mut vars: HashMap<T, (usize, usize)> = HashMap::new();
-//         let mut total_cols = 0;
-//         for (var, &(_, dim)) in &self.vars {
-//             if !vars.contains_key(var) {
-//                 vars.insert(var.clone(), (total_cols, dim));
-//                 total_cols += dim;
-//             }
-//         }
-//         for (var, &(_, dim)) in &other.vars {
-//             if !vars.contains_key(var) {
-//                 vars.insert(var.clone(), (total_cols, dim));
-//                 total_cols += dim;
-//             }
-//         }
-
-//         // Allocate matrix filled with zeros
-//         let self_rows = self.mat.nrows();
-//         let other_rows = other.mat.nrows();
-//         let total_rows = self_rows + other_rows;
-//         let mut mat = Mat::<f64>::zeros(total_rows, total_cols);
-
-//         // Copy blocks from self.mat into the top block row: [0..self_rows]
-//         for (var, &(self_col_start, dim)) in &self.vars {
-//             let (col_start, _) = vars.get(var).unwrap();
-//             let self_block = self
-//                 .mat
-//                 .view_range(.., self_col_start..self_col_start + dim);
-//             let mut target_slice = mat.view_range_mut(0..self_rows, *col_start..*col_start + dim);
-//             target_slice.copy_from(&self_block);
-//         }
-
-//         // Copy blocks from other.mat into the top block row: [self_rows..total_rows]
-//         for (var, &(other_col_start, dim)) in &other.vars {
-//             let (col_start, _) = vars.get(var).unwrap();
-//             let other_block = other
-//                 .mat
-//                 .view_range(.., other_col_start..other_col_start + dim);
-//             let mut target_slice =
-//                 mat.view_range_mut(self_rows..total_rows, *col_start..*col_start + dim);
-//             target_slice.copy_from(&other_block);
-//         }
-
-//         Self {
-//             vars,
-//             mat,
-//             mean,
-//             covariance,
-//         }
-//     }
-
-//     pub fn cols_var(&self, var: &T) -> Result<MatView<f64>, String> {
-//         match self.var_range.get(var) {
-//             Some((start, dim)) => Ok(self.mat.columns(*start, *dim)),
-//             None => Err("Variable not found".to_string()),
-//         }
-//     }
-
-//     #[inline]
-//     pub fn mean(&self) -> &Col<f64> {
-//         &self.mean
-//     }
-
-//     #[inline]
-//     pub fn covariance(&self) -> &Mat<f64> {
-//         &self.covariance
-//     }
-
-//     pub fn contains(&self, label: &T) -> bool {
-//         self.vars.iter().any(|var| var.0 == *label)
-//     }
-
-//     pub fn vars_iter(&self) -> impl Iterator<Item = &(T, usize)> {
-//         self.vars.iter()
-//     }
-// }
-
-// pub struct Gaussian {
-//     pub mean: Col<f64>,
-//     pub cov: Mat<f64>,
-// }
-
-// pub struct LocalGaussianFactor<T> {
-//     var: (T, usize),       // (label, dim)
-//     map_mat: Mat<f64>, // use view instead??
-//     prior_msg: Gaussian,
-//     workspace: Col<f64>, // holds the decision
-//     cond_vars: Vec<(T, usize)>,
-//     cond_map_mat: Mat<f64>,
-//     cond_msg: Gaussian,
-//     cond_workspace: Col<f64>,
-// }
-
-// impl<T: Clone + PartialEq + Eq + Hash> LocalGaussianFactor<T> {
-//     // pub fn from_lgfs(lgfs: &[LinearGaussianFactor<T>], vars: &[T], cond_vars: &[T]) -> Self {
-//     //     let vars: Vec<T> = vars.iter().cloned().collect();
-//     //     let cond_vars: Vec<T> = cond_vars.iter().cloned().collect();
-
-//     //     let mut mat = Mat::zeros(0, 0);
-//     //     let mut cond_mat = Mat::zeros(0, 0);
-//     //     let mut mean = Col::zeros(0);
-//     //     let mut covariance = Mat::zeros(0, 0);
-
-//     //     for lgf in lgfs {
-//     //         todo!()
-//     //     }
-//     // }
-
-//     pub fn decide(&mut self) {
-//         let a = a;
-//         let v_x = &self.prior_msg.cov;
-//         let v_s = &self.cond_msg.cov;
-//         let a_vx = a * v_x; // Allocate buffer for (A * Vx) once: shape (dim_s, dim_x)
-
-//         // 1. y = mbs - A * mfx
-//         // Pre-allocate once into the vector that will hold the solved `z`
-//         self.cond_workspace.copy_from(&self.cond_msg.mean);
-//         // z = (-1.0) * A * prior_mean + (1.0) * z
-//         self.cond_workspace.gemv(-1.0, a, &self.prior_msg.mean, 1.0);
-
-//         // Allocate P by cloning Vs once, then accumulate A * Vx * A^T into it:
-//         // P = (1.0) * (a_vx) * A^T + (1.0) * P
-//         let mut p = v_s.clone(); // no need to allocate a new matrix here???
-//         p.gemm_tr(1.0, &a_vx, a, 1.0);
-
-//         // 2. Solve P * z = tmp in place
-//         // Cholesky consumes `p` in place, then `solve_mut` overwrites `z`
-//         let chol_p = p.cholesky().expect("Matrix P is not positive-definite");
-//         chol_p.solve_mut(&mut self.cond_workspace); // `z` now holds the solved value
-
-//         // 4. Result = mfx + Vfx * A^T * z
-//         self.workspace.copy_from(&self.prior_msg.mean);
-//         self.workspace
-//             .gemv_tr(1.0, &a_vx, &self.cond_workspace, 1.0);
-//     }
-
-//     pub fn cond_vars_contain(&self, label: &T) -> bool {
-//         self.cond_vars.iter().any(|var| var.0 == *label)
-//     }
-
-//     pub fn cond_vars_iter(&self) -> impl Iterator<Item = &(T, usize)> {
-//         self.cond_vars.iter()
-//     }
-// }
-
-// /// An observation block in a Gaussian factor graph
-// // Gaussian messages are parameterized by mean vector (m) and covariance matrix (V)
-// /// Represents y = A x + B z where x is the variable of interest, z the separator, and y the observation
-// pub struct ObsBlock {
-//     a: Mat<f64>,
-//     b: Mat<f64>,
-//     mby: Col<f64>,
-//     vby: Mat<f64>,
-// }
-
-// impl ObsBlock {
-//     pub fn new(a: Mat<f64>, b: Mat<f64>, mby: Col<f64>, vby: Mat<f64>) -> Self {
-//         Self { a, b, mby, vby }
-//     }
-
-//     pub fn forward(&self) {
-//         todo!()
-//     }
-
-//     /// Forward pass through the observation block.
-//     /// The result (mean) is written to `out`, which must be pre-allocated.
-//     pub fn forward_m_only(
-//         &self,
-//         mfx: &Col<f64>,
-//         vfx: &Mat<f64>,
-//         mz: &Col<f64>, // separator decisions
-//     ) -> Col<f64> {
-//         let a_vx = &self.a * vfx; // Allocate buffer for (A * Vx) once: shape (dim_s, dim_x)
-
-//         // y = my - A * mfx
-//         let mut wsy = &self.mby - &self.b * mz;
-//         wsy.gemv(-1.0, &self.a, &mfx, 1.0);
-
-//         // Allocate P by cloning vy once, then accumulate A * Vx * A^T into it:
-//         // g_inv = A Vx A.t + Vy
-//         let mut g_inv = self.vby.clone();
-//         g_inv.gemm_tr(1.0, &a_vx, &self.a, 1.0);
-
-//         // Solve P z = y in place
-//         // Cholesky consumes `p` in place, then `solve_mut` overwrites `z`
-//         let chol = g_inv.cholesky().expect("Matrix G is not positive-definite");
-//         chol.solve_mut(&mut wsy); // `z` now holds the solved value
-
-//         // Result = mfx + Vfx * A^T * z
-//         let mut mx = mfx.clone();
-//         mx.gemv_tr(1.0, &a_vx, &wsy, 1.0);
-//         mx
-//     }
-// }
-
-/// A constraint block in a Gaussian factor graph with matrices A and B.
-/// X is the main variable and S the separator variable.
-/// Y = A X + Z and Z = B S are virtual variables.
-pub struct ConstraintBlock {
     // ---- Logical Dimensions ----
     pub dim_x: usize,
     pub dim_s: usize,
@@ -279,11 +63,11 @@ pub struct ConstraintBlock {
     // ---- Matrices and Vectors ----
     a: Mat<f64>,     // with shape (dim_y, dim_x)
     b: Mat<f64>,     // with shape (dim_y, dim_s)
+    xifx: Col<f64>,  // x forward weighted mean vector with shape (dim_x)
+    wfx: Mat<f64>,   // x forward precision matrix with shape (dim_x, dim_x)
     xiby: Col<f64>,  // y backward weighted mean vector with shape (dim_y)
     wby: Mat<f64>,   // y backward precision matrix with shape (dim_y, dim_y)
     wby_a: Mat<f64>, // with shape (dim_y, dim_x)
-    xifx: Col<f64>,  // x forward weighted mean vector with shape (dim_x)
-    wfx: Mat<f64>,   // x forward precision matrix with shape (dim_x, dim_x)
     xitx: Col<f64>,  // x dual weighted mean vectors with shape (dim_x)
     rtx: Mat<f64>,   // x dual square-root precision matrix with shape (dim_x, dim_x)
     xibz: Col<f64>,  // z backward weighted mean vectors with shape (dim_y)
@@ -296,31 +80,20 @@ pub struct ConstraintBlock {
     mem_buf: MemBuffer,
 }
 
-impl ConstraintBlock {
+impl<T: PartialEq + Clone + Display + Eq + Hash> AXBSGaussBlock<T> {
     pub fn new(
+        info_x: VarInfo<T>,               // the informations about the x variable
+        info_s: Vec<(VarInfo<T>, usize)>, // the informations about the s variables and their positions in the B matrix
+        dim_x: usize,
+        dim_s: usize,
+        dim_y: usize,
         a: Mat<f64>,
         b: Mat<f64>,
-        xiby: Col<f64>,
-        wby: Mat<f64>,
         xifx: Col<f64>,
         wfx: Mat<f64>,
+        xiby: Col<f64>,
+        wby: Mat<f64>,
     ) -> Self {
-        // 1. Extract logical dimensions
-        let dim_y = a.nrows();
-        let dim_x = a.ncols();
-        let dim_s = b.ncols();
-
-        // 2. Validate all inputs against logical dimensions
-        // This guarantees the block is perfectly sized for its entire lifetime.
-        assert_eq!(b.nrows(), dim_y);
-        assert_eq!(xiby.nrows(), dim_y);
-        assert_eq!(wby.nrows(), dim_y);
-        assert_eq!(wby.ncols(), dim_y);
-        assert_eq!(xifx.nrows(), dim_x);
-        assert_eq!(wfx.nrows(), dim_x);
-        assert_eq!(wfx.ncols(), dim_x);
-
-        // 3. Allocate internal matrices and workspaces based on exact dimensions
         let wby_a = &wby * &a;
 
         let xitx = Col::zeros(dim_x);
@@ -341,16 +114,18 @@ impl ConstraintBlock {
         let mem_buf = MemBuffer::new(cholesky_memory.or(solve_memory));
 
         Self {
+            info_x,
+            info_s,
             dim_x,
-            dim_y,
             dim_s,
+            dim_y,
             a,
             b,
+            xifx,
+            wfx,
             xiby,
             wby,
             wby_a,
-            xifx,
-            wfx,
             xitx,
             rtx,
             xibz,
@@ -362,7 +137,197 @@ impl ConstraintBlock {
         }
     }
 
+    /// Build an [`AXBSGaussBlock`] from a [`VarInfo`] and a slice of [`AXGaussBlock`]s.
+    /// Warning: the x variable must be present in all blocks.
+    pub fn from(info_x: VarInfo<T>, gauss_blocks: &[AXGaussBlock<T>]) -> Self {
+        // Partition Gaussian blocks into X and X+S blocks
+        let (gauss_blocks_xs, gauss_blocks_x): (Vec<&AXGaussBlock<T>>, Vec<&AXGaussBlock<T>>) =
+            gauss_blocks
+                .iter()
+                .partition(|block| block.info_x.len() > 1);
+
+        // Build the separator variable information
+        let info_s = Self::build_info_s(&info_x, &gauss_blocks_xs);
+
+        // Compute the logical dimensions
+        let dim_x = info_x.size;
+        let dim_s = info_s.iter().map(|(info_u, _)| info_u.size).sum::<usize>();
+        let dim_y = gauss_blocks_xs.iter().map(|b| b.dim_y).sum::<usize>();
+
+        // Create block from Gaussian blocks on X only
+        let xifx = Self::build_xifx(dim_x, &gauss_blocks_x);
+        let wfx = Self::build_wfx(dim_x, &gauss_blocks_x);
+
+        // Create block from Gaussian blocks on X and S variables
+        let a = Self::build_a(dim_x, dim_y, &info_x, &gauss_blocks_xs);
+        let b = Self::build_b(dim_s, dim_y, &info_s, &gauss_blocks_xs);
+        let xiby = Self::build_xiby(dim_y, &gauss_blocks_xs);
+        let wby = Self::build_wby(dim_y, &gauss_blocks_xs);
+
+        Self::new(
+            info_x, info_s, dim_x, dim_s, dim_y, a, b, xifx, wfx, xiby, wby,
+        )
+    }
+
+    fn build_info_s(
+        info_x: &VarInfo<T>,
+        gauss_blocks_xs: &[&AXGaussBlock<T>],
+    ) -> Vec<(VarInfo<T>, usize)> {
+        let mut info_s: Vec<(VarInfo<T>, usize)> = Vec::new();
+        let mut seen_labels: HashSet<T> = HashSet::new();
+
+        let mut offset = 0;
+        for block in gauss_blocks_xs {
+            for (info_u, _) in &block.info_x {
+                if info_u.label != info_x.label && !seen_labels.contains(&info_u.label) {
+                    seen_labels.insert(info_u.label.clone());
+                    info_s.push((info_u.clone(), offset));
+                    offset += info_u.size;
+                }
+            }
+        }
+        info_s
+    }
+
+    fn build_xifx(dim_x: usize, ax_gauss_blocks: &[&AXGaussBlock<T>]) -> Col<f64> {
+        // Compute xifx
+        let mut xifx = Col::zeros(dim_x);
+
+        for block in ax_gauss_blocks {
+            matmul(
+                xifx.rb_mut(),
+                Accum::Add,
+                block.a.transpose(),
+                &block.xiby,
+                1.0,
+                Par::Seq,
+            );
+        }
+
+        xifx
+    }
+
+    fn build_wfx(dim_x: usize, ax_gauss_blocks: &[&AXGaussBlock<T>]) -> Mat<f64> {
+        // Allocate temporary storage matrix for matmul operations
+        let max_dim_y = ax_gauss_blocks
+            .iter()
+            .map(|block| block.dim_y)
+            .max()
+            .unwrap_or(0);
+        let mut tmp_storage = Mat::zeros(dim_x, max_dim_y);
+
+        let mut wfx = Mat::zeros(dim_x, dim_x);
+        for block in ax_gauss_blocks {
+            // Slice the columns up to the current block's dim_y
+            let mut tmp = tmp_storage.as_mut().subcols_mut(0, block.dim_y);
+            matmul(
+                &mut tmp,
+                Accum::Replace,
+                &block.a.transpose(),
+                &block.wby,
+                1.0,
+                Par::Seq,
+            );
+            matmul(wfx.rb_mut(), Accum::Add, tmp, &block.a, 1.0, Par::Seq);
+        }
+
+        wfx
+    }
+
+    fn build_a(
+        dim_x: usize,
+        dim_y: usize,
+        info_x: &VarInfo<T>,
+        abxs_gauss_blocks: &[&AXGaussBlock<T>],
+    ) -> Mat<f64> {
+        // Create A matrix by block rows
+        let mut a = Mat::zeros(dim_y, dim_x);
+        let mut row = 0;
+        for block in abxs_gauss_blocks {
+            // Extract the block rows corresponding to this Gaussian block
+            let mut a_rows = a.as_mut().subrows_mut(row, block.dim_y);
+
+            // Extract the block column corresponding to the main variable x
+            if let Some((block_info_x, block_offset_x)) = block
+                .info_x
+                .iter()
+                .filter(|(block_info_var, _)| {
+                    (block_info_var.label == info_x.label) && (block_info_var.size == info_x.size)
+                })
+                .next()
+            {
+                a_rows.copy_from(&block.a.subcols(*block_offset_x, block_info_x.size));
+            }
+
+            row += block.dim_y;
+        }
+
+        a
+    }
+
+    fn build_b(
+        dim_s: usize,
+        dim_y: usize,
+        info_s: &[(VarInfo<T>, usize)],
+        abxs_gauss_blocks: &[&AXGaussBlock<T>],
+    ) -> Mat<f64> {
+        // Create B matrix by block rows
+        let mut b = Mat::zeros(dim_y, dim_s);
+        let mut row = 0;
+        for block in abxs_gauss_blocks {
+            // Extract the block rows corresponding to this Gaussian block
+            let mut b_rows = b.as_mut().subrows_mut(row, block.dim_y);
+
+            // Create block row one variable (u) at a time
+            for (info_u, offset_u) in info_s {
+                if let Some((block_info_u, block_offset_u)) = block
+                    .info_x
+                    .iter()
+                    .filter(|(block_info_var, _)| {
+                        (block_info_var.label == info_u.label)
+                            && (block_info_var.size == info_u.size)
+                    })
+                    .next()
+                {
+                    // Extract the block column corresponding to this variable (u)
+                    let mut b_block = b_rows.as_mut().subcols_mut(*offset_u, info_u.size);
+                    b_block.copy_from(&block.a.subcols(*block_offset_u, block_info_u.size));
+                }
+            }
+
+            row += block.dim_y;
+        }
+        b
+    }
+
+    fn build_xiby(dim_y: usize, abxs_gauss_blocks: &[&AXGaussBlock<T>]) -> Col<f64> {
+        let mut xiby = Col::zeros(dim_y);
+        let mut row = 0;
+        for block in abxs_gauss_blocks {
+            // Extract the block rows corresponding to this Gaussian block
+            let mut xiby_rows = xiby.as_mut().subrows_mut(row, block.dim_y);
+            xiby_rows.copy_from(&block.xiby);
+            row += block.dim_y;
+        }
+        xiby
+    }
+
+    fn build_wby(dim_y: usize, abxs_gauss_blocks: &[&AXGaussBlock<T>]) -> Mat<f64> {
+        let mut wby = Mat::zeros(dim_y, dim_y);
+        let mut diag = 0;
+        for block in abxs_gauss_blocks {
+            // Extract the block rows corresponding to this Gaussian block
+            let mut wby_block = wby
+                .as_mut()
+                .submatrix_mut(diag, diag, block.dim_y, block.dim_y);
+            wby_block.copy_from(&block.wby);
+            diag += block.dim_y;
+        }
+        wby
+    }
+
     pub fn eliminate_x(&mut self) -> Result<()> {
+        // should rather return a CompactLinearGaussBlock
         let mut stack = MemStack::new(&mut self.mem_buf);
 
         // Compute xitx = xifx + a.t xiby, which is also used in solve_x
@@ -456,129 +421,104 @@ impl ConstraintBlock {
     }
 }
 
-//     pub fn forward_mx_vx(&self) {
-//         todo!()
-//     }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     /// Forward pass through the observation block.
-//     /// The result (mean) is written to `out`, which must be pre-allocated.
-//     pub fn forward_mx(
-//         &self,
-//         mx: &Col<f64>,
-//         vx: &Mat<f64>,
-//         z: &Col<f64>, // separator decisions
-//     ) -> Col<f64> {
-//         let a_vx = &self.a * vx; // Allocate buffer for (A * Vx) once: shape (dim_s, dim_x)
+    #[test]
+    fn test_axbs_gauss_block_from() {
+        let info_x = VarInfo::new("x1", 3);
 
-//         // y = my - A * mx
-//         let mut wsy = &self.mby - &self.b * z;
-//         wsy.gemv(-1.0, &self.a, &mx, 1.0);
+        let gauss_blocks = vec![
+            AXGaussBlock::new(
+                vec![
+                    (VarInfo::new("x3", 3), 0),
+                    (VarInfo::new("x1", 3), 3),
+                    (VarInfo::new("x2", 2), 6),
+                ],
+                8,
+                3,
+                mat![
+                    [1.31, 1.32, 1.33, 1.11, 1.12, 1.13, 1.21, 1.22],
+                    [2.31, 2.32, 2.33, 2.11, 2.12, 2.13, 2.21, 2.22],
+                    [3.31, 3.32, 3.33, 3.11, 3.12, 3.13, 3.21, 3.22]
+                ],
+                col![1.0, 2.0, 3.0],
+                mat![[11.0, 0.0, 0.0], [0.0, 22.0, 0.0], [0.0, 0.0, 33.0]],
+            ),
+            AXGaussBlock::new(
+                vec![(VarInfo::new("x4", 4), 0), (VarInfo::new("x1", 3), 4)],
+                7,
+                1,
+                mat![[4.41, 4.42, 4.43, 4.44, 4.11, 4.12, 4.13]],
+                col![4.0],
+                mat![[44.0]],
+            ),
+            AXGaussBlock::new(
+                vec![(VarInfo::new("x1", 3), 0)],
+                3,
+                2,
+                mat![[5.11, 5.12, 5.13], [6.11, 6.12, 6.13]],
+                col![5.0, 6.0],
+                mat![[55.0, 56.0], [56.0, 66.0]],
+            ),
+        ];
 
-//         // g_inv = A Vx A.t + Vy
-//         let mut g_inv = self.vby.clone();
-//         g_inv.gemm_tr(1.0, &a_vx, &self.a, 1.0);
+        let axbs_gauss_block = AXBSGaussBlock::from(info_x, &gauss_blocks);
 
-//         // Solve P z = y in place
-//         // Cholesky consumes `p` in place, then `solve_mut` overwrites `z`
-//         let chol = g_inv.cholesky().expect("Matrix G is not positive-definite");
-//         chol.solve_mut(&mut wsy); // `z` now holds the solved value
+        // check info_x
+        assert_eq!(axbs_gauss_block.info_x.label, "x1");
+        assert_eq!(axbs_gauss_block.info_x.size, 3);
 
-//         // Result = mx + Vx * A^T * z
-//         let mut mx = mx.clone();
-//         mx.gemv_tr(1.0, &a_vx, &wsy, 1.0);
-//         mx
-//     }
-// }
+        // check info_s
+        assert_eq!(axbs_gauss_block.info_s.len(), 3);
+        assert_eq!(axbs_gauss_block.info_s[0].0.label, "x3");
+        assert_eq!(axbs_gauss_block.info_s[0].0.size, 3);
+        assert_eq!(axbs_gauss_block.info_s[0].1, 0);
+        assert_eq!(axbs_gauss_block.info_s[1].0.label, "x2");
+        assert_eq!(axbs_gauss_block.info_s[1].0.size, 2);
+        assert_eq!(axbs_gauss_block.info_s[1].1, 3);
+        assert_eq!(axbs_gauss_block.info_s[2].0.label, "x4");
+        assert_eq!(axbs_gauss_block.info_s[2].0.size, 4);
+        assert_eq!(axbs_gauss_block.info_s[2].1, 5);
 
-// impl<T> GaussMsg<T> {
-//     pub fn new(
-//         vars: Vec<T>,
-//         a: Mat<f64>,
-//         mean: Col<f64>,
-//         covariance: Mat<f64>,
-//     ) -> Result<Self, String> {
-//         let n = vars.len();
-//         let m = mean.len();
+        // check logical dimensions
+        assert_eq!(axbs_gauss_block.dim_x, 3);
+        assert_eq!(axbs_gauss_block.dim_s, 9);
+        assert_eq!(axbs_gauss_block.dim_y, 4);
 
-//         if a.nrows() != m || a.ncols() != n {
-//             return Err(format!(
-//                 "Matrix A dimension mismatch: expected ({m}, {n}), got ({}, {})",
-//                 a.nrows(),
-//                 a.ncols()
-//             ));
-//         }
-//         if covariance.nrows() != m || covariance.ncols() != m {
-//             return Err(format!(
-//                 "Covariance dimension mismatch: expected ({m}, {m}), got ({}, {})",
-//                 covariance.nrows(),
-//                 covariance.ncols()
-//             ));
-//         }
+        // check x-factors
+        let a = mat![[5.11, 5.12, 5.13], [6.11, 6.12, 6.13]];
+        let xiby = col![5.0, 6.0];
+        let wby = mat![[55.0, 56.0], [56.0, 66.0]];
+        let xifx = a.transpose() * xiby;
+        zip!(&xifx, &axbs_gauss_block.xifx).for_each(|unzip!(a, b)| assert!((a - b).abs() < 1e-9));
+        let wfx = a.transpose() * wby * a;
+        zip!(&wfx, &axbs_gauss_block.wfx).for_each(|unzip!(a, b)| assert!((a - b).abs() < 1e-9));
 
-//         Ok(Self {
-//             vars,
-//             a,
-//             mean,
-//             covariance,
-//         })
-//     }
-
-//     #[inline]
-//     pub fn n(&self) -> usize {
-//         self.vars.len()
-//     }
-
-//     #[inline]
-//     pub fn m(&self) -> usize {
-//         self.mean.len()
-//     }
-// }
-
-// /// A Gaussian factor that depends on a single variable (potentially multivariate)
-// pub struct SingleGaussMsg<T> {
-//     var: T,
-//     params: f64, // linear transformation, mean, covariance...
-// }
-
-// /// A Gaussian factor that depends on multiple variables (potentially multivariate)
-// pub struct MultiGaussMsg<T> {
-//     pub vars: Vec<T>,
-//     pub params: f64, // linear transformation, mean, covariance...
-// }
-
-// /// A Gaussian factor that depends on a single variable (potentially multivariate) and multiple conditioning variables (potentially multivariate)
-// pub struct DownGaussMsg<T> {
-//     var: T,
-//     cond_vars: Vec<T>,
-//     cond_params: Vec<f64>, // linear transformation, mean, covariance...
-// }
-
-// impl<T> CondGaussMsg<T> {
-//     pub fn new(var: T) -> Self {
-//         Self {
-//             var,
-//             cond_vars: Vec::new(),
-//             cond_params: Vec::new(),
-//         }
-//     }
-
-//     pub fn combine(&mut self, other: &GaussFactor<T>) {
-//         todo!()
-//     }
-
-//     pub fn cond_vars_iter(&self) -> impl Iterator<Item = &T> {
-//         self.cond_vars.iter()
-//     }
-
-//     pub fn reduce(&self) -> Option<GaussFactor<T>> {
-//         todo!()
-//     }
-
-//     // pub fn new(var: T, cond_vars: Vec<T>, cond_params: f64) -> Self {
-//     //     Self {
-//     //         var,
-//     //         cond_vars,
-//     //         cond_params,
-//     //     }
-//     // }
-// }
+        // check x-s factors
+        let a = mat![
+            [1.11, 1.12, 1.13],
+            [2.11, 2.12, 2.13],
+            [3.11, 3.12, 3.13],
+            [4.11, 4.12, 4.13]
+        ];
+        zip!(&a, &axbs_gauss_block.a).for_each(|unzip!(a, b)| assert!((a - b).abs() < 1e-9));
+        let b = mat![
+            [1.31, 1.32, 1.33, 1.21, 1.22, 0.00, 0.00, 0.00, 0.00],
+            [2.31, 2.32, 2.33, 2.21, 2.22, 0.00, 0.00, 0.00, 0.00],
+            [3.31, 3.32, 3.33, 3.21, 3.22, 0.00, 0.00, 0.00, 0.00],
+            [0.00, 0.00, 0.00, 0.00, 0.00, 4.41, 4.42, 4.43, 4.44]
+        ];
+        zip!(&b, &axbs_gauss_block.b).for_each(|unzip!(a, b)| assert!((a - b).abs() < 1e-9));
+        let xiby = col![1.0, 2.0, 3.0, 4.0];
+        zip!(&xiby, &axbs_gauss_block.xiby).for_each(|unzip!(a, b)| assert!((a - b).abs() < 1e-9));
+        let wby = mat![
+            [11.0, 0.0, 0.0, 0.0],
+            [0.0, 22.0, 0.0, 0.0],
+            [0.0, 0.0, 33.0, 0.0],
+            [0.0, 0.0, 0.0, 44.0]
+        ];
+        zip!(&wby, &axbs_gauss_block.wby).for_each(|unzip!(a, b)| assert!((a - b).abs() < 1e-9));
+    }
+}
