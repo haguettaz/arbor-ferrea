@@ -2,7 +2,7 @@
 
 A high-performance Rust library for non-linear factor graph optimization, state estimation, and Simultaneous Localization and Mapping (SLAM).
 
-`sam-rs` is heavily inspired by [GTSAM](https://gtsam.org), designed from the ground up to leverage Rust’s type safety, memory guarantees, and modern linear algebra ecosystem.
+Heavily inspired by [GTSAM](https://gtsam.org), `sam-rs` is designed from the ground up to leverage Rust’s type safety, memory guarantees, and high-performance linear algebra routines powered by the [faer](https://faer.veganb.tw) crate.
 
 ---
 
