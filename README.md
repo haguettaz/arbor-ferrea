@@ -8,10 +8,10 @@ Heavily inspired by [GTSAM](https://gtsam.org), `sam-rs` is designed from the gr
 
 ## 🗺️ Roadmap & Features
 
-### Bayes Tree & Solver Core
-- [ ] Multifrontal variable elimination via QR and Cholesky factorizations
-- [ ] Clique amalgamation and chordal Bayes tree assembly
-- [ ] Incremental updates with fluid relinearization (iSAM2)
+### Gaussian Tree & Solver Core
+- [ ] Upward-filtering (Gaussian tree assembly) downward-deciding (solve)
+- [ ] Incremental updates
+- [ ] Fluid relinearization (iSAM2)
 - [ ] Variable reordering heuristics (COLAMD / Constrained COLAMD)
 - [ ] Parallel solver execution (on parallel branches)
 
@@ -22,15 +22,17 @@ Heavily inspired by [GTSAM](https://gtsam.org), `sam-rs` is designed from the gr
 
 ### Robust Estimation & Factors
 - [ ] Common SLAM constraints
-- [ ] Non-Gaussian / NUP (Normal with Unknown Parameters) integration
+- [ ] NUP (Normal with Unknown Parameters) integration
 
 ---
 
-## 📚 Theoretical References
+## 📚 References
 
-1. **Square Root SAM**  
-   F. Dellaert and M. Kaess, *"Square Root SAM: Simultaneous Localization and Mapping via Square Root Information Smoothing,"* *The International Journal of Robotics Research (IJRR)*, 2006.
-2. **iSAM**  
-   M. Kaess, A. Ranganathan, and F. Dellaert, *"iSAM: Incremental Smoothing and Mapping,"* *IEEE Transactions on Robotics (T-RO)*, 2008.
-3. **iSAM2**  
-   M. Kaess, H. Johannsson, R. Roberts, V. Ila, J. Leonard, and F. Dellaert, *"iSAM2: Incremental Smoothing and Mapping Using the Bayes Tree,"* *The International Journal of Robotics Research (IJRR)*, 31(2), pp. 216–235, 2012.
+1. **Factor Graphs**
+   H.-A. Loeliger, J. Dauwels, J. Hu, S. Korl, Li Ping, and F. Kschischang, "The factor graph approach to model-based signal processing," *Proceedings of the IEEE*, vol. 95, no. 6, pp. 1295-1322, June 2007.
+2. **Square Root SAM**  
+   F. Dellaert and M. Kaess, "Square Root SAM: Simultaneous localization and mapping via square root information smoothing," *The International Journal of Robotics Research (IJRR)*, 2006.
+3. **iSAM**  
+   M. Kaess, A. Ranganathan, and F. Dellaert, "iSAM: Incremental smoothing and mapping," *IEEE Transactions on Robotics (T-RO)*, 2008.
+4. **iSAM2**  
+   M. Kaess, H. Johannsson, R. Roberts, V. Ila, J. Leonard, and F. Dellaert, "iSAM2: Incremental smoothing and mapping using the Bayes tree," *The International Journal of Robotics Research (IJRR)*, vol. 31, no. 2, pp. 216–235, 2012.
