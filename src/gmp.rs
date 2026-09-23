@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::hash::Hash;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::{cholesky::llt, matmul::matmul};
 use faer::prelude::*;
@@ -326,7 +326,7 @@ impl<T: PartialEq + Clone + Display + Eq + Hash> AXBSGaussBlock<T> {
         wby
     }
 
-    pub fn eliminate_x(&mut self) -> Result<()> {
+    pub fn eliminate_x(&mut self) -> Result<AXGaussBlock<T>> {
         // should rather return a CompactLinearGaussBlock
         let mut stack = MemStack::new(&mut self.mem_buf);
 
@@ -359,7 +359,13 @@ impl<T: PartialEq + Clone + Display + Eq + Hash> AXBSGaussBlock<T> {
             Par::Seq,
             &mut stack,
             default(),
-        )?;
+        )
+        .with_context(|| {
+            format!(
+                "The precision matrix for variable {} is singular.",
+                self.info_x
+            )
+        })?;
 
         // Compute xibz = xiby - wby a h (xifx + a.t xiby) = xiby - wby_a h_xitx
         // where h_xitx = h (xifx + a.t xiby) with hinv = (wfx + a.t wby a)
@@ -398,10 +404,18 @@ impl<T: PartialEq + Clone + Display + Eq + Hash> AXBSGaussBlock<T> {
             Par::Seq,
         );
 
-        Ok(())
+        let result = AXGaussBlock::new(
+            self.info_s.clone(),
+            self.dim_s,
+            self.dim_y,
+            self.b.clone(),
+            self.xibz.clone(),
+            self.wbz.clone(),
+        );
+        Ok(result)
     }
 
-    pub fn solve_x(&mut self, mut x: ColMut<f64>, s: ColRef<f64>) -> Result<()> {
+    pub fn solve_x(&mut self, mut x: ColMut<f64>, s: ColRef<f64>) {
         let mut stack = MemStack::new(&mut self.mem_buf);
 
         matmul(&mut self.b_s, Accum::Replace, &self.b, s, 1.0, Par::Seq);
@@ -417,7 +431,6 @@ impl<T: PartialEq + Clone + Display + Eq + Hash> AXBSGaussBlock<T> {
         );
 
         llt::solve::solve_in_place(self.rtx.as_ref(), x.as_mat_mut(), Par::Seq, &mut stack);
-        Ok(())
     }
 }
 
