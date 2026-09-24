@@ -1,12 +1,5 @@
 use std::fmt::{self, Display, Formatter};
 
-// #[derive(Clone, PartialEq, Eq, Hash)]
-// pub struct VarInfo<T> {
-//     pub label: T,
-//     pub size: usize,
-//     pub offset: usize,
-// }
-
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct VarInfo<T> {
     pub label: T,
