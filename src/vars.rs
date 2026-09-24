@@ -13,6 +13,12 @@ pub struct VarInfo<T> {
     pub size: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Symbol {
+    pub chr: u8, // e.g., b'x' for poses, b'l' for landmarks
+    pub index: u64,
+}
+
 impl<T: Clone + Display + PartialEq> VarInfo<T> {
     pub fn new(label: T, size: usize) -> Self {
         Self { label, size }
