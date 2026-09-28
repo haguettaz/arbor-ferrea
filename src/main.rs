@@ -99,6 +99,9 @@ where
 }
 
 fn main() {
+    // index: HashMap<T, VarId>,
+    // inverse: HashMap<VarId, T>,
+
     // 1. Elimination Order: l1 -> l2 -> x0 -> x1 -> x2
     let order = vec!["x1", "l1", "x0", "x2", "l2"];
     // let order = vec!["l1", "l2", "x0", "x1", "x2"];
