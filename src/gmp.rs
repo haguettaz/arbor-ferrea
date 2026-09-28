@@ -139,30 +139,36 @@ impl<T: PartialEq + Clone + Display + Eq + Hash> AXBSGaussBlock<T> {
 
     /// Build an [`AXBSGaussBlock`] from a [`VarInfo`] and a slice of [`AXGaussBlock`]s.
     /// Warning: the x variable must be present in all blocks.
-    pub fn from(info_x: VarInfo<T>, gauss_blocks: &[AXGaussBlock<T>]) -> Self {
+    pub fn from<'a>(
+        info_x: &VarInfo<T>,
+        gauss_blocks: impl IntoIterator<Item = &'a AXGaussBlock<T>>,
+    ) -> Self
+    where
+        T: 'a,
+    {
         // Partition Gaussian blocks into X and X+S blocks
-        let (gauss_blocks_xs, gauss_blocks_x): (Vec<&AXGaussBlock<T>>, Vec<&AXGaussBlock<T>>) =
-            gauss_blocks
-                .iter()
-                .partition(|block| block.info_x.len() > 1);
+        let (block_xs, blocks_x): (Vec<&AXGaussBlock<T>>, Vec<&AXGaussBlock<T>>) = gauss_blocks
+            .into_iter()
+            .partition(|block| block.info_x.len() > 1);
 
         // Build the separator variable information
-        let info_s = Self::build_info_s(&info_x, &gauss_blocks_xs);
+        let info_x = info_x.clone();
+        let info_s = Self::build_info_s(&info_x, &block_xs);
 
         // Compute the logical dimensions
         let dim_x = info_x.size;
         let dim_s = info_s.iter().map(|(info_u, _)| info_u.size).sum::<usize>();
-        let dim_y = gauss_blocks_xs.iter().map(|b| b.dim_y).sum::<usize>();
+        let dim_y = block_xs.iter().map(|b| b.dim_y).sum::<usize>();
 
         // Create block from Gaussian blocks on X only
-        let xifx = Self::build_xifx(dim_x, &gauss_blocks_x);
-        let wfx = Self::build_wfx(dim_x, &gauss_blocks_x);
+        let xifx = Self::build_xifx(dim_x, &blocks_x);
+        let wfx = Self::build_wfx(dim_x, &blocks_x);
 
         // Create block from Gaussian blocks on X and S variables
-        let a = Self::build_a(dim_x, dim_y, &info_x, &gauss_blocks_xs);
-        let b = Self::build_b(dim_s, dim_y, &info_s, &gauss_blocks_xs);
-        let xiby = Self::build_xiby(dim_y, &gauss_blocks_xs);
-        let wby = Self::build_wby(dim_y, &gauss_blocks_xs);
+        let a = Self::build_a(dim_x, dim_y, &info_x, &block_xs);
+        let b = Self::build_b(dim_s, dim_y, &info_s, &block_xs);
+        let xiby = Self::build_xiby(dim_y, &block_xs);
+        let wby = Self::build_wby(dim_y, &block_xs);
 
         Self::new(
             info_x, info_s, dim_x, dim_s, dim_y, a, b, xifx, wfx, xiby, wby,
@@ -477,7 +483,7 @@ mod tests {
             ),
         ];
 
-        let axbs_gauss_block = AXBSGaussBlock::from(info_x, &gauss_blocks);
+        let axbs_gauss_block = AXBSGaussBlock::from(&info_x, &gauss_blocks);
 
         // check info_x
         assert_eq!(axbs_gauss_block.info_x.label, "x1");
