@@ -1,5 +1,5 @@
 [package]
-name = "sam-rs"
+name = "arbor-ferrea"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,3 +8,4 @@ dyn-stack = "0.13.2"
 faer="0.24.4"
 faer-traits="0.24.0"
 anyhow = "1.0.104"
+rayon = "1.12.0"
