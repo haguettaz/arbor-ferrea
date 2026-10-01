@@ -118,44 +118,44 @@ where
         Ok(node)
     }
 
-    /// Updates the node's state by computing `xitx`, `rtx`, `h_xitx`, and `h_at_wby`.
-    pub fn update(&mut self) -> Result<()> {
-        let mut stack = MemStack::new(&mut self.mem_buf);
-
-        // Compute xitx = a.t xiby, which is also used in solve_x
-        matmul(
-            self.xitx.rb_mut(),
-            Accum::Replace,
-            self.a.transpose().rb(),
-            self.xiby.rb(),
-            T::one(),
-            Par::Seq,
-        );
-
-        // Compute wtx = (a.t wby a) and its Cholesky decomposition rtx, the later being also used in solve_x
-        matmul(
-            self.wtx.rb_mut(),
-            Accum::Replace,
-            self.a.transpose().rb(),
-            self.wby_a.rb(),
-            T::one(),
-            Par::Seq,
-        );
-        lblt::factor::cholesky_in_place(
-            self.wtx.rb_mut(),
-            self.subdiag.rb_mut(),
-            &mut self.perm,
-            &mut self.perm_inv,
-            // lblt::factor::LbltRegularization::default(), // no regularization
-            Par::Seq,
-            &mut stack,
-            default(),
-        );
-
-        // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
-
-        Ok(())
-    }
+    //     /// Updates the node's state by computing `xitx`, `rtx`, `h_xitx`, and `h_at_wby`.
+    //     pub fn update(&mut self) -> Result<()> {
+    //         let mut stack = MemStack::new(&mut self.mem_buf);
+    //
+    //         // Compute xitx = a.t xiby, which is also used in solve_x
+    //         matmul(
+    //             self.xitx.rb_mut(),
+    //             Accum::Replace,
+    //             self.a.transpose().rb(),
+    //             self.xiby.rb(),
+    //             T::one(),
+    //             Par::Seq,
+    //         );
+    //
+    //         // Compute wtx = (a.t wby a) and its Bunch-Kaufman decomposition rtx, the later being also used in solve_x
+    //         matmul(
+    //             self.wtx.rb_mut(),
+    //             Accum::Replace,
+    //             self.a.transpose().rb(),
+    //             self.wby_a.rb(),
+    //             T::one(),
+    //             Par::Seq,
+    //         );
+    //         lblt::factor::cholesky_in_place(
+    //             self.wtx.rb_mut(),
+    //             self.subdiag.rb_mut(),
+    //             &mut self.perm,
+    //             &mut self.perm_inv,
+    //             // lblt::factor::LbltRegularization::default(), // no regularization
+    //             Par::Seq,
+    //             &mut stack,
+    //             default(),
+    //         );
+    //
+    //         // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
+    //
+    //         Ok(())
+    //     }
 
     /// Create a [`GaussianFactor`] by eliminating the [`GaussianNode`]'s main variable.
     /// Warning: The Bunch-Kaufman factorization decomposes any symmetric matrix `wtx` into `lblt`.
@@ -190,15 +190,6 @@ where
             T::one(),
             Par::Seq,
         );
-
-        // llt::factor::cholesky_in_place(
-        //     self.rtx.rb_mut(),
-        //     // llt::factor::LltRegularization::default(),
-        //     Par::Seq,
-        //     &mut stack,
-        //     default(),
-        // )
-        // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
 
         // Compute the Bunch-Kaufman factorization of wtx
         // Note: the factorization exists even for singular matrix
@@ -447,12 +438,12 @@ where
             offset_obs += size_obs;
         }
 
-        let mut node = GaussianNode::try_new(
+        let node = GaussianNode::try_new(
             var, separator, children, dim_x, dim_y, dim_s, a, b, b_ctx, xiby, wby,
         )
         .with_context(|| format!("Failed to build Gaussian node for var: {}", var))?;
-        node.update()
-            .with_context(|| format!("Failed to update Gaussian node for var: {}", var))?;
+        // node.update()
+        //     .with_context(|| format!("Failed to update Gaussian node for var: {}", var))?;
         Ok(node)
     }
 
