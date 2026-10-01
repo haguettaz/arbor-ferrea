@@ -7,6 +7,7 @@ use dyn_stack::MemStack;
 use faer::diag::Diag;
 use faer::linalg::cholesky::lblt;
 use faer::linalg::matmul::matmul;
+use faer::linalg::solvers::Svd;
 use faer::perm::PermRef;
 use faer::prelude::*;
 use faer::{Accum, ColMut, ColRef, Par, Spec};
@@ -39,14 +40,10 @@ pub struct GaussianNode<T> {
     // ---- Workspaces ----
     wby_a: Mat<T>, // (dim_y, dim_x)
     s: Col<T>,     // (dim_s)
-    b_s: Col<T>,   // (dim_y)
 
     xitx: Col<T>,
     wtx: Mat<T>,
-    subdiag: Diag<T>,
-    perm: Vec<u32>,
-    perm_inv: Vec<u32>,
-    mem_buf: MemBuffer,
+    svd: Svd<T>,
 }
 
 impl<T> GaussianNode<T>
@@ -73,24 +70,14 @@ where
         xiby: Col<T>,
         wby: Mat<T>,
     ) -> Result<Self> {
+        let xitx = &a.transpose() * &xiby;
         let wby_a = &wby * &a;
-
-        let xitx = Col::zeros(dim_x);
-        let wtx = Mat::zeros(dim_x, dim_x);
-        let subdiag = Diag::zeros(dim_x);
-        let perm = vec![0u32; dim_x];
-        let perm_inv = vec![0u32; dim_x];
+        let wtx = &a.transpose() * &wby_a;
+        let svd = Svd::new(wtx.as_ref()).unwrap();
 
         // let h_xitx = Col::zeros(dim_x);
         // let h_at_wby = Mat::zeros(dim_x, dim_y);
         let s = Col::zeros(dim_s);
-        let b_s = Col::zeros(dim_y);
-
-        // Compute the size and alignment of the required scratch space for Cholesky decomposition and associated solver
-        let cholesky_memory =
-            lblt::factor::cholesky_in_place_scratch::<u32, T>(dim_x, Par::Seq, Spec::default());
-        let solve_memory = lblt::solve::solve_in_place_scratch::<u32, T>(dim_x, dim_y, Par::Seq);
-        let mem_buf = MemBuffer::new(cholesky_memory.or(solve_memory));
 
         let node = Self {
             var,
@@ -107,197 +94,54 @@ where
             wby_a,
             xitx,
             wtx,
-            subdiag,
-            perm,
-            perm_inv,
+            svd,
             s,
-            b_s,
-            mem_buf,
         };
 
         Ok(node)
     }
 
-    //     /// Updates the node's state by computing `xitx`, `rtx`, `h_xitx`, and `h_at_wby`.
-    //     pub fn update(&mut self) -> Result<()> {
-    //         let mut stack = MemStack::new(&mut self.mem_buf);
-    //
-    //         // Compute xitx = a.t xiby, which is also used in solve_x
-    //         matmul(
-    //             self.xitx.rb_mut(),
-    //             Accum::Replace,
-    //             self.a.transpose().rb(),
-    //             self.xiby.rb(),
-    //             T::one(),
-    //             Par::Seq,
-    //         );
-    //
-    //         // Compute wtx = (a.t wby a) and its Bunch-Kaufman decomposition rtx, the later being also used in solve_x
-    //         matmul(
-    //             self.wtx.rb_mut(),
-    //             Accum::Replace,
-    //             self.a.transpose().rb(),
-    //             self.wby_a.rb(),
-    //             T::one(),
-    //             Par::Seq,
-    //         );
-    //         lblt::factor::cholesky_in_place(
-    //             self.wtx.rb_mut(),
-    //             self.subdiag.rb_mut(),
-    //             &mut self.perm,
-    //             &mut self.perm_inv,
-    //             // lblt::factor::LbltRegularization::default(), // no regularization
-    //             Par::Seq,
-    //             &mut stack,
-    //             default(),
-    //         );
-    //
-    //         // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
-    //
-    //         Ok(())
-    //     }
-
     /// Create a [`GaussianFactor`] by eliminating the [`GaussianNode`]'s main variable.
-    /// Warning: The Bunch-Kaufman factorization decomposes any symmetric matrix `wtx` into `lblt`.
+    /// The backward messages are computed via the SVD decomposition of `wtx` which is the
+    /// most stable method to solve linear systems wtx c = d.
     fn eliminate(&mut self) -> Result<GaussianFactor<T>> {
-        let vars = self.separator.clone();
-
-        let dim_x = self.dim_s;
-        let dim_y = self.dim_y;
-
-        let a = self.b.clone();
-        let a_ctx = self.b_ctx.clone();
-
-        // Allocate memory for the stack from the node's memory buffer
-        let mut stack = MemStack::new(&mut self.mem_buf);
-
-        // Compute xitx = a.t xiby, which is also used in solve_x
-        matmul(
-            self.xitx.rb_mut(),
-            Accum::Replace,
-            self.a.transpose().rb(),
-            self.xiby.rb(),
-            T::one(),
-            Par::Seq,
-        );
-
-        // Compute wtx = (a.t wby a) and its Cholesky decomposition rtx, the later being also used in solve_x
-        matmul(
-            self.wtx.rb_mut(),
-            Accum::Replace,
-            self.a.transpose().rb(),
-            self.wby_a.rb(),
-            T::one(),
-            Par::Seq,
-        );
-
-        // Compute the Bunch-Kaufman factorization of wtx
-        // Note: the factorization exists even for singular matrix
-        lblt::factor::cholesky_in_place(
-            self.wtx.as_mut(),
-            self.subdiag.as_mut(),
-            &mut self.perm,
-            &mut self.perm_inv,
-            Par::Seq,
-            stack,
-            default(),
-        );
-
-        // Compute xibz = xiby - wby a h a.t xiby = xiby - wby_a h_xitx
-        // where h_xitx = h a.t xiby with hinv = a.t wby a
-        let mut h_xitx = self.xitx.clone();
-        lblt::solve::solve_in_place(
-            self.wtx.as_ref(),
-            self.wtx.diagonal(),
-            self.subdiag.as_ref(),
-            PermRef::new_checked(&self.perm, &self.perm_inv, self.dim_x),
-            h_xitx.as_mat_mut(),
-            Par::Seq,
-            &mut stack,
-        );
+        // Compute xibz = xiby - wby a h xitx where h invert wtx
+        let h_xitx = self.svd.solve(self.xitx.as_ref());
+        let xibz = &self.xiby - &self.wby_a * &h_xitx;
 
         // Compute wbz = wby - wby a h a.t wby
-        let mut h_at_wby = self.wby_a.transpose().to_owned();
-        lblt::solve::solve_in_place(
-            self.wtx.as_ref(),
-            self.wtx.diagonal(),
-            self.subdiag.as_ref(),
-            PermRef::new_checked(&self.perm, &self.perm_inv, self.dim_x),
-            h_at_wby.as_mut(),
-            Par::Seq,
-            &mut stack,
-        );
+        let h_at_wby = self.svd.solve(self.wby_a.transpose());
+        let wbz = &self.wby - &self.wby_a * &h_at_wby;
 
-        let mut xiby = self.xiby.clone();
-        matmul(
-            xiby.rb_mut(),
-            Accum::Add,
-            self.wby_a.rb(),
-            h_xitx.rb(),
-            T::one().neg(),
-            Par::Seq,
+        let msg = GaussianFactor::new(
+            self.separator.clone(),
+            self.b.clone(),
+            self.b_ctx.clone(),
+            xibz,
+            wbz,
         );
-
-        let mut wby = self.wby.clone();
-        matmul(
-            wby.rb_mut(),
-            Accum::Add,
-            self.wby_a.rb(),
-            h_at_wby.rb(),
-            T::one().neg(),
-            Par::Seq,
-        );
-
-        let msg = GaussianFactor {
-            vars,
-            dim_x,
-            dim_y,
-            a,
-            a_ctx,
-            xiby,
-            wby,
-        };
 
         Ok(msg)
     }
 
     /// Decides the value of the node's variables using the current state of the tree.
     /// Warning:
-    /// - A few fields must be up-to-date: `b`, `s`, `rtx`, `wby_a`.
+    /// - A few fields must be up-to-date: `b`, `s`, `svd`, `wby_a`.
     /// - `x` must be a mutable slice of the same length as the node's x dimension.
     pub fn decide(&mut self, x: &mut [T]) {
-        let mut stack = MemStack::new(&mut self.mem_buf);
+        let b_s = &self.b * &self.s;
 
         let mut x_col = ColMut::from_slice_mut(x);
-
-        matmul(
-            self.b_s.as_mut(),
-            Accum::Replace,
-            self.b.as_ref(),
-            &self.s,
-            T::one(),
-            Par::Seq,
-        );
-
         x_col.copy_from(&self.xitx);
         matmul(
             x_col.rb_mut(),
             Accum::Add,
             self.wby_a.transpose(),
-            &self.b_s,
+            &b_s,
             T::one().neg(),
             Par::Seq,
         );
-
-        lblt::solve::solve_in_place(
-            self.wtx.as_ref(),
-            self.wtx.diagonal(),
-            self.subdiag.as_ref(),
-            PermRef::new_checked(&self.perm, &self.perm_inv, self.dim_x),
-            x_col.as_mat_mut(),
-            Par::Seq,
-            &mut stack,
-        );
+        self.svd.solve_in_place(x_col)
     }
 
     /// Helper method to recursively format the tree with ASCII branches
