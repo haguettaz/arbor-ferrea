@@ -1,2 +1,4 @@
+pub type VarId = usize;
+
 // pub mod lie;
-pub mod utils;
+pub mod dictionary;
