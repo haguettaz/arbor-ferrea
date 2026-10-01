@@ -1,12 +1,10 @@
 use anyhow::{Context, Result};
-use rayon::prelude::*;
 
 use crate::factor::anchor::AnchorFactor;
-use crate::tree::numeric::ConcurrentStateBuffer;
 use crate::variable::dictionary::VarDict;
 
-/// Warning: it is the caller's responsibility to ensure that the anchor factors are independent
-/// and write to disjoint memory regions.
+/// Builds the values buffer for solving; anchored variable are initialized with their known values
+/// and unknown variables are initialized with the provided default value.
 pub fn build_buffer<T: Copy + Send + Sync>(
     anchor_factors: &[AnchorFactor<T>],
     context: &VarDict,
@@ -14,21 +12,24 @@ pub fn build_buffer<T: Copy + Send + Sync>(
 ) -> Result<Vec<T>> {
     let mut buffer = vec![default_value; context.get_total_size()];
 
-    let state_buf = ConcurrentStateBuffer::new(&mut buffer);
-    anchor_factors
-        .par_iter()
-        .try_for_each(|factor| -> Result<()> {
-            let offset = context
-                .get_offset(factor.var)
-                .with_context(|| format!("Missing offset for anchor variable {}", factor.var))?;
-
-            // SAFETY: The caller guarantees disjoint variable offsets across anchor factors.
-            unsafe {
-                state_buf.write_slice(offset, &factor.val);
-            }
-
-            Ok(())
-        })?;
-
+    let mut seen = std::collections::HashSet::with_capacity(anchor_factors.len());
+    for factor in anchor_factors {
+        let (offset, size) = context
+            .get_memory_layout(factor.var)
+            .with_context(|| format!("Missing layout for anchor variable {}", factor.var))?;
+        anyhow::ensure!(
+            factor.val.len() == size,
+            "Anchor value length ({}) does not match variable size ({}) for variable {}",
+            factor.val.len(),
+            size,
+            factor.var
+        );
+        anyhow::ensure!(
+            seen.insert(factor.var),
+            "Duplicate anchor for variable {}",
+            factor.var
+        );
+        buffer[offset..offset + size].copy_from_slice(&factor.val);
+    }
     Ok(buffer)
 }

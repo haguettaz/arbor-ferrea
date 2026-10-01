@@ -501,7 +501,7 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         if self.roots.is_empty() {
-            return write!(f, "Empty SymbolicTree");
+            return write!(f, "Empty GaussianTree");
         }
 
         for (i, root) in self.roots.iter().enumerate() {
