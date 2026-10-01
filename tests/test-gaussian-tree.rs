@@ -137,6 +137,12 @@ fn run_solver_singular() {
     // 2. Perform the parallel build pass (bottom-up): should fail!
     let res = GaussianTree::from_symbolic(&symb_tree, &factors, &dict);
     assert!(res.is_err());
+
+    // var=2, rtx=[
+    // [0.05269289355567835, -0.03290560543586823, -0.01905444671986705],
+    // [-0.0329056054358684, 0.05534416149468514, 0.0034353797251171175],
+    // [-0.019054446719867127, 0.0034353797251171158, 0.008949082977065542],
+    // ]
 }
 
 #[test]
