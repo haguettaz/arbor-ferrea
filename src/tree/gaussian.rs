@@ -1,16 +1,10 @@
 use anyhow::{Context, Result};
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 
-use dyn_stack::MemBuffer;
-use dyn_stack::MemStack;
-
-use faer::diag::Diag;
-use faer::linalg::cholesky::lblt;
 use faer::linalg::matmul::matmul;
 use faer::linalg::solvers::Svd;
-use faer::perm::PermRef;
 use faer::prelude::*;
-use faer::{Accum, ColMut, ColRef, Par, Spec};
+use faer::{Accum, ColMut, ColRef, Par};
 use faer_traits::RealField;
 
 use super::numeric::{ConcurrentStateBuffer, NumericTree};
@@ -40,10 +34,9 @@ pub struct GaussianNode<T> {
     // ---- Workspaces ----
     wby_a: Mat<T>, // (dim_y, dim_x)
     s: Col<T>,     // (dim_s)
-
     xitx: Col<T>,
-    wtx: Mat<T>,
-    svd: Svd<T>,
+    _wtx: Mat<T>,
+    svd: Svd<T>, // the SVD decomposition of `wtx`
 }
 
 impl<T> GaussianNode<T>
@@ -93,7 +86,7 @@ where
             wby,
             wby_a,
             xitx,
-            wtx,
+            _wtx: wtx,
             svd,
             s,
         };
