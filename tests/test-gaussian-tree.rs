@@ -67,13 +67,6 @@ fn run_solver_singular() {
 
     let mut factors = vec![
         GaussianFactor::new(
-            vec![x1],
-            mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            vec![(x1, 0, 3)],
-            col![0.0, 0.0, 0.0],
-            mat![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-        ),
-        GaussianFactor::new(
             vec![x1, x2],
             mat![
                 [1.0, 0.0, 0.0, -1.0, 0.0, 0.0],
@@ -121,7 +114,7 @@ fn run_solver_singular() {
     // 0. Pre-process factors (do nothing) and init state buffer
     let res = preprocess_factors(&mut factors, &[]);
     assert!(res.is_ok());
-    assert_eq!(factors.len(), 6);
+    assert_eq!(factors.len(), 5);
     let res = build_buffer(&[], &dict, f64::NAN);
     assert!(res.is_ok());
     let out = res.unwrap();
@@ -137,12 +130,6 @@ fn run_solver_singular() {
     // 2. Perform the parallel build pass (bottom-up): should fail!
     let res = GaussianTree::from_symbolic(&symb_tree, &factors, &dict);
     assert!(res.is_err());
-
-    // var=2, rtx=[
-    // [0.05269289355567835, -0.03290560543586823, -0.01905444671986705],
-    // [-0.0329056054358684, 0.05534416149468514, 0.0034353797251171175],
-    // [-0.019054446719867127, 0.0034353797251171158, 0.008949082977065542],
-    // ]
 }
 
 #[test]

@@ -126,14 +126,9 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
             T::one(),
             Par::Seq,
         );
-        eprintln!("var={}, rtx={:?}", self.var, self.rtx);
-        // let min_diag = (0..self.dim_x)
-        //     .map(|i| self.rtx[(i, i)].abs())
-        //     .fold(f64::INFINITY, f64::min);
-        // eprintln!("var={}, min diagonal={:.17e}", self.var, min_diag);
         llt::factor::cholesky_in_place(
             self.rtx.rb_mut(),
-            llt::factor::LltRegularization::default(),
+            llt::factor::LltRegularization::default(), // no regularization
             Par::Seq,
             &mut stack,
             default(),
