@@ -126,14 +126,24 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
             T::one(),
             Par::Seq,
         );
-        llt::factor::cholesky_in_place(
+        // llt::factor::cholesky_in_place(
+        //     self.rtx.rb_mut(),
+        //     llt::factor::LltRegularization::default(), // no regularization
+        //     Par::Seq,
+        //     &mut stack,
+        //     default(),
+        // )
+        // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
+
+        let res = llt::factor::cholesky_in_place(
             self.rtx.rb_mut(),
             llt::factor::LltRegularization::default(), // no regularization
             Par::Seq,
             &mut stack,
             default(),
-        )
-        .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
+        );
+
+        eprintln!("{:?}", res);
 
         Ok(())
     }
