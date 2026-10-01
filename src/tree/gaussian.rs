@@ -1,12 +1,16 @@
 use anyhow::{Context, Result};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+
 use dyn_stack::MemBuffer;
 use dyn_stack::MemStack;
-use faer::linalg::cholesky::llt;
+
+use faer::diag::Diag;
+use faer::linalg::cholesky::lblt;
 use faer::linalg::matmul::matmul;
+use faer::perm::PermRef;
 use faer::prelude::*;
 use faer::{Accum, ColMut, ColRef, Par, Spec};
 use faer_traits::RealField;
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 
 use super::numeric::{ConcurrentStateBuffer, NumericTree};
 use super::symbolic::SymbolicFactor;
@@ -31,17 +35,24 @@ pub struct GaussianNode<T> {
     b_ctx: Vec<(VarId, usize, usize)>, // memory layout of the separator variables in b
     xiby: Col<T>,                      // backward weighted mean vector for y -- shape (dim_y)
     wby: Mat<T>,                       // backward precision matrix for y -- shape (dim_y, dim_y)
-    xitx: Col<T>,                      // dual weighted mean vectors for x -- shape (dim_x)
-    rtx: Mat<T>, // dual square-root precision matrix for x -- shape (dim_x, dim_x)
 
     // ---- Workspaces ----
     wby_a: Mat<T>, // (dim_y, dim_x)
     s: Col<T>,     // (dim_s)
     b_s: Col<T>,   // (dim_y)
+
+    xitx: Col<T>,
+    wtx: Mat<T>,
+    subdiag: Diag<T>,
+    perm: Vec<u32>,
+    perm_inv: Vec<u32>,
     mem_buf: MemBuffer,
 }
 
-impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
+impl<T> GaussianNode<T>
+where
+    T: RealField + Copy + Send + Sync + Debug + Display,
+{
     pub fn get_memory_layout(&self, var: VarId) -> Option<(usize, usize)> {
         self.b_ctx
             .iter()
@@ -65,7 +76,10 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
         let wby_a = &wby * &a;
 
         let xitx = Col::zeros(dim_x);
-        let rtx = Mat::zeros(dim_x, dim_x);
+        let wtx = Mat::zeros(dim_x, dim_x);
+        let subdiag = Diag::zeros(dim_x);
+        let perm = vec![0u32; dim_x];
+        let perm_inv = vec![0u32; dim_x];
 
         // let h_xitx = Col::zeros(dim_x);
         // let h_at_wby = Mat::zeros(dim_x, dim_y);
@@ -74,8 +88,8 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
 
         // Compute the size and alignment of the required scratch space for Cholesky decomposition and associated solver
         let cholesky_memory =
-            llt::factor::cholesky_in_place_scratch::<T>(dim_x, Par::Seq, Spec::default());
-        let solve_memory = llt::solve::solve_in_place_scratch::<T>(dim_x, dim_y, Par::Seq);
+            lblt::factor::cholesky_in_place_scratch::<u32, T>(dim_x, Par::Seq, Spec::default());
+        let solve_memory = lblt::solve::solve_in_place_scratch::<u32, T>(dim_x, dim_y, Par::Seq);
         let mem_buf = MemBuffer::new(cholesky_memory.or(solve_memory));
 
         let node = Self {
@@ -92,9 +106,10 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
             wby,
             wby_a,
             xitx,
-            rtx,
-            // h_xitx,
-            // h_at_wby,
+            wtx,
+            subdiag,
+            perm,
+            perm_inv,
             s,
             b_s,
             mem_buf,
@@ -119,38 +134,32 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
 
         // Compute wtx = (a.t wby a) and its Cholesky decomposition rtx, the later being also used in solve_x
         matmul(
-            self.rtx.rb_mut(),
+            self.wtx.rb_mut(),
             Accum::Replace,
             self.a.transpose().rb(),
             self.wby_a.rb(),
             T::one(),
             Par::Seq,
         );
-        // llt::factor::cholesky_in_place(
-        //     self.rtx.rb_mut(),
-        //     llt::factor::LltRegularization::default(), // no regularization
-        //     Par::Seq,
-        //     &mut stack,
-        //     default(),
-        // )
-        // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
-
-        let res = llt::factor::cholesky_in_place(
-            self.rtx.rb_mut(),
-            llt::factor::LltRegularization::default(), // no regularization
+        lblt::factor::cholesky_in_place(
+            self.wtx.rb_mut(),
+            self.subdiag.rb_mut(),
+            &mut self.perm,
+            &mut self.perm_inv,
+            // lblt::factor::LbltRegularization::default(), // no regularization
             Par::Seq,
             &mut stack,
             default(),
         );
 
-        eprintln!("{:?}", res);
+        // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
 
         Ok(())
     }
 
     /// Create a [`GaussianFactor`] by eliminating the [`GaussianNode`]'s main variable.
-    /// Warning: `a` must have full column rank (its columns must be linearly independent).
-    fn eliminate_main(&mut self) -> Result<GaussianFactor<T>> {
+    /// Warning: The Bunch-Kaufman factorization decomposes any symmetric matrix `wtx` into `lblt`.
+    fn eliminate(&mut self) -> Result<GaussianFactor<T>> {
         let vars = self.separator.clone();
 
         let dim_x = self.dim_s;
@@ -174,30 +183,59 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
 
         // Compute wtx = (a.t wby a) and its Cholesky decomposition rtx, the later being also used in solve_x
         matmul(
-            self.rtx.rb_mut(),
+            self.wtx.rb_mut(),
             Accum::Replace,
             self.a.transpose().rb(),
             self.wby_a.rb(),
             T::one(),
             Par::Seq,
         );
-        llt::factor::cholesky_in_place(
-            self.rtx.rb_mut(),
-            llt::factor::LltRegularization::default(),
+
+        // llt::factor::cholesky_in_place(
+        //     self.rtx.rb_mut(),
+        //     // llt::factor::LltRegularization::default(),
+        //     Par::Seq,
+        //     &mut stack,
+        //     default(),
+        // )
+        // .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
+
+        // Compute the Bunch-Kaufman factorization of wtx
+        // Note: the factorization exists even for singular matrix
+        lblt::factor::cholesky_in_place(
+            self.wtx.as_mut(),
+            self.subdiag.as_mut(),
+            &mut self.perm,
+            &mut self.perm_inv,
             Par::Seq,
-            &mut stack,
+            stack,
             default(),
-        )
-        .with_context(|| format!("Cholesky factorization failed for variable {}: precision matrix is singular or not positive definite. Ensure observation precision matrices are positive definite and the measurement Jacobian A has full column rank.", self.var))?;
+        );
 
         // Compute xibz = xiby - wby a h a.t xiby = xiby - wby_a h_xitx
         // where h_xitx = h a.t xiby with hinv = a.t wby a
         let mut h_xitx = self.xitx.clone();
-        llt::solve::solve_in_place(self.rtx.as_ref(), h_xitx.as_mat_mut(), Par::Seq, &mut stack);
+        lblt::solve::solve_in_place(
+            self.wtx.as_ref(),
+            self.wtx.diagonal(),
+            self.subdiag.as_ref(),
+            PermRef::new_checked(&self.perm, &self.perm_inv, self.dim_x),
+            h_xitx.as_mat_mut(),
+            Par::Seq,
+            &mut stack,
+        );
 
         // Compute wbz = wby - wby a h a.t wby
         let mut h_at_wby = self.wby_a.transpose().to_owned();
-        llt::solve::solve_in_place(self.rtx.as_ref(), h_at_wby.as_mut(), Par::Seq, &mut stack);
+        lblt::solve::solve_in_place(
+            self.wtx.as_ref(),
+            self.wtx.diagonal(),
+            self.subdiag.as_ref(),
+            PermRef::new_checked(&self.perm, &self.perm_inv, self.dim_x),
+            h_at_wby.as_mut(),
+            Par::Seq,
+            &mut stack,
+        );
 
         let mut xiby = self.xiby.clone();
         matmul(
@@ -260,7 +298,15 @@ impl<T: RealField + Copy + Send + Sync + Debug + Display> GaussianNode<T> {
             Par::Seq,
         );
 
-        llt::solve::solve_in_place(self.rtx.as_ref(), x_col.as_mat_mut(), Par::Seq, &mut stack);
+        lblt::solve::solve_in_place(
+            self.wtx.as_ref(),
+            self.wtx.diagonal(),
+            self.subdiag.as_ref(),
+            PermRef::new_checked(&self.perm, &self.perm_inv, self.dim_x),
+            x_col.as_mat_mut(),
+            Par::Seq,
+            &mut stack,
+        );
     }
 
     /// Helper method to recursively format the tree with ASCII branches
@@ -294,7 +340,10 @@ impl<T> SymbolicFactor for GaussianFactor<T> {
     }
 }
 
-impl<T: Send + Sync + Copy + RealField + Display + Debug> NumericTree for GaussianTree<T> {
+impl<T> NumericTree for GaussianTree<T>
+where
+    T: Send + Sync + Copy + RealField + Display + Debug,
+{
     /// The concrete node type.
     type Node = GaussianNode<T>;
     /// The original raw numerical factor.
@@ -408,7 +457,7 @@ impl<T: Send + Sync + Copy + RealField + Display + Debug> NumericTree for Gaussi
     }
 
     fn build_out_message(node: &mut Self::Node, _ctx: &Self::Context) -> Result<Self::Message> {
-        node.eliminate_main()
+        node.eliminate()
     }
 
     fn decide_node(
@@ -446,7 +495,10 @@ impl<T: Send + Sync + Copy + RealField + Display + Debug> NumericTree for Gaussi
     }
 }
 
-impl<T: Display + Debug + Send + Sync + Copy + RealField> Display for GaussianTree<T> {
+impl<T> Display for GaussianTree<T>
+where
+    T: Display + Debug + Send + Sync + Copy + RealField,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         if self.roots.is_empty() {
             return write!(f, "Empty SymbolicTree");

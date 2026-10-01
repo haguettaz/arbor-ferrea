@@ -43,19 +43,19 @@ fn run_solver_empty() {
     assert!(symb_tree.roots.is_empty());
 
     // 2. Perform the parallel build pass (bottom-up)
-    let res = GaussianTree::from_symbolic(&symb_tree, &factors, &dict);
+    let res = GaussianTree::<f64>::from_symbolic(&symb_tree, &factors, &dict);
     assert!(res.is_ok());
     let mut gauss_tree = res.unwrap();
     assert!(gauss_tree.roots.is_empty());
 
-    // 3. Perform parallel solve (Top-Down)
+    // 3. Perform parallel solve (top-down)
     let res = gauss_tree.solve_par(&mut out, &dict);
     assert!(res.is_ok());
     assert!(out.iter().all(|v| v.is_nan()));
 }
 
 #[test]
-/// Context: incomplete/singular system with no global anchor
+/// Context: incomplete system with no global anchor
 fn run_solver_singular() {
     // Build the dictionary and register domain variables
     let mut dict = VarDict::new();
@@ -117,20 +117,25 @@ fn run_solver_singular() {
     assert_eq!(factors.len(), 5);
     let res = build_buffer(&[], &dict, f64::NAN);
     assert!(res.is_ok());
-    let out = res.unwrap();
+    let mut out = res.unwrap();
     assert!(out.iter().all(|v| v.is_nan()));
 
     // 1. Build the symbolic tree
+    // let order = [x1, x2, x3, l1, l2]; // user-defined elimination order
     let order = [l1, l2, x1, x2, x3]; // user-defined elimination order
     let res = SymbolicTree::build(factors.iter().map(|f| f as &dyn SymbolicFactor), &order);
     assert!(res.is_ok());
     let symb_tree = res.unwrap();
     assert_eq!(symb_tree.roots.len(), 1);
 
-    // 2. Perform the parallel build pass (bottom-up): should fail!
-    let res = GaussianTree::from_symbolic(&symb_tree, &factors, &dict);
-    assert!(res.is_err());
-    // assert!(res.is_ok());
+    // 2. Perform the parallel build pass (bottom-up)
+    let res = GaussianTree::<f64>::from_symbolic(&symb_tree, &factors, &dict);
+    assert!(res.is_ok());
+    let mut gauss_tree = res.unwrap();
+
+    // 3. Perform parallel solve (top-down): solution is arbitrary (and depends on the elimination order).
+    let res = gauss_tree.solve_par(&mut out, &dict);
+    assert!(res.is_ok());
 }
 
 #[test]
@@ -227,12 +232,12 @@ fn run_solver_anchored() {
     assert_eq!(symb_tree.roots.len(), 1);
 
     // 2. Perform the parallel build pass (bottom-up)
-    let res = GaussianTree::from_symbolic(&symb_tree, &factors, &dict);
+    let res = GaussianTree::<f64>::from_symbolic(&symb_tree, &factors, &dict);
     assert!(res.is_ok());
     let mut gauss_tree = res.unwrap();
     assert_eq!(gauss_tree.roots.len(), 1);
 
-    // 3. Perform parallel solve (Top-Down)
+    // 3. Perform parallel solve (top-down)
     let res = gauss_tree.solve_par(&mut out, &dict);
     assert!(res.is_ok());
     assert!(
@@ -339,12 +344,11 @@ fn run_solver() {
     assert_eq!(symb_tree.roots.len(), 1);
 
     // 2. Perform the parallel build pass (bottom-up)
-    let mut gauss_tree: GaussianTree<f64> =
-        GaussianTree::from_symbolic(&symb_tree, &factors, &dict)
-            .expect("Error building the Gaussian tree");
+    let mut gauss_tree = GaussianTree::<f64>::from_symbolic(&symb_tree, &factors, &dict)
+        .expect("Error building the Gaussian tree");
     assert_eq!(gauss_tree.roots.len(), 1);
 
-    // 3. Perform parallel solve (Top-Down)
+    // 3. Perform parallel solve (top-down)
     let res = gauss_tree.solve_par(&mut out, &dict);
     assert!(res.is_ok());
     assert!(
