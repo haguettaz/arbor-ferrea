@@ -136,6 +136,7 @@ fn run_solver_singular() {
     // 3. Perform parallel solve (top-down): solution is arbitrary (and depends on the elimination order).
     let res = gauss_tree.solve_par(&mut out, &dict);
     assert!(res.is_ok());
+    assert!(out.iter().all(|v| v.is_finite()));
 }
 
 #[test]
