@@ -1,8 +1,8 @@
 /*!
-Tree-based Gaussian factor graph solver.
+Implementation of Gaussian numeric trees.
 
-The two-pass (build–solve) procedure corresponds to an upward-filtering
-downward-deciding (UFDD) in a Gaussian factor graph.
+The two-pass (build–solve) procedure can be interpreted as
+upward-filtering downward-deciding in a Gaussian factor graph.
 
 ### References
 - **Notations & Gaussian message-passing rules:**
@@ -28,40 +28,48 @@ use faer::{Accum, ColMut, ColRef, Par, Spec};
 use faer_traits::RealField;
 
 use super::numeric::{ConcurrentStateBuffer, NumericTree};
-use super::symbolic::SymbolicFactor;
-use crate::factor::gaussian::GaussianFactor;
-use crate::variable::gaussian::VarBlock;
-use crate::variable::{VarId, dictionary::VarDict};
+use crate::factor::gaussian::{GaussianFactor, LinVar};
+use crate::variable::dictionary::VarDict;
 
-/// The main variable X and separator variable S are associated with the matrices A and B, respectively.
-/// For convenience, the virtual variables Y := A X + Z and Z := B S are introduced.
-/// The node contains several workspaces to avoid repeated memory reallocation.
+/// A node in a tree-structured Gaussian factor graph.
+///
+/// Encapsulates a main variable `X` and separator variables `S` coupled
+/// via linear observations `Y := A X + B S`. The observation vector `Y`
+/// is assigned a Gaussian prior defined by a weighted mean and a precision matrix.
+///
+/// The node owns its children in the tree.
+/// Internal workspaces are preallocated to eliminate heap churn during inference.
 pub struct GaussianNode<T> {
-    pub main: VarId,
-    pub separator: Vec<VarId>,
-
-    pub children: Vec<GaussianNode<T>>, // Gaussian node children in the tree
-
-    pub dim_x: usize,
-    pub dim_y: usize,
-
-    pub blk_x: VarBlock<T>,
-    pub blk_s: Vec<VarBlock<T>>,
-
-    pub xiby: Col<T>, // backward weighted mean vector for y -- shape (dim_y)
-    pub wby: Mat<T>,  // backward precision matrix for y -- shape (dim_y, dim_y)
+    /// The main variable index.
+    pub main: usize,
+    /// The separator variables indices.
+    pub separator: Vec<usize>,
+    /// The node children.
+    pub children: Vec<GaussianNode<T>>,
+    /// The dimension of the main variable.
+    pub dim_main: usize,
+    /// The dimension of the observations.
+    pub dim_obs: usize,
+    /// The linear contribution of the main variable into the observation.
+    pub main_lin_var: LinVar<T>,
+    /// The linear contribution of the separator variables into the observation.
+    pub sep_lin_vars: Vec<LinVar<T>>,
+    /// The weighted mean vector of the observation prior with shape `(dim_obs,)`.
+    pub xib_obs: Col<T>, // (dim_obs)
+    /// The precision matrix of the observation prior with shape `(dim_obs, dim_obs)`.
+    pub wb_obs: Mat<T>, // (dim_obs, dim_obs)
 
     // ---- Workspaces ----
-    wby_a: Mat<T>, // (dim_y, dim_x)
-    xitx: Col<T>,  // (dim_x)
-    wtx: Mat<T>,   // (dim_x, dim_x)
+    wby_a: Mat<T>, // (dim_obs, dim_main)
+    xitx: Col<T>,  // (dim_main)
+    wtx: Mat<T>,   // (dim_main, dim_main)
     wtx_s: Diag<T>,
     wtx_u: Mat<T>,
     wtx_v: Mat<T>,
-    vtx: Mat<T>, // (dim_x, dim_x) pseudoinverse of wtx computed by singular value decomposition
-    vtx_xitx: Col<T>, // (dim_x)
-    vtx_at_wby: Mat<T>, // (dim_x, dim_y)
-    b_s: Col<T>, // (dim_y)
+    vtx: Mat<T>, // (dim_main, dim_main) pseudoinverse of wtx computed by singular value decomposition
+    vtx_xitx: Col<T>, // (dim_main)
+    vtx_at_wby: Mat<T>, // (dim_main, dim_obs)
+    b_s: Col<T>, // (dim_obs)
     mem_buf: MemBuffer,
 }
 
@@ -69,68 +77,52 @@ impl<T> GaussianNode<T>
 where
     T: RealField + Copy + Send + Sync + Debug + Display,
 {
-    // pub fn get_memory_layout(&self, var: VarId) -> Option<(usize, usize)> {
-    //     self.b_ctx
-    //         .iter()
-    //         .find(|(v, _, _)| *v == var)
-    //         .map(|(_, offset, size)| (*offset, *size))
-    // }
-
-    /// Create a new [`GaussianNode`].
-    /// Note: all workspaces are initialized with zeros.
+    /// Create a new [`GaussianNode`] with all workspace filled with zero.
     pub fn new(
-        main: VarId,
-        separator: Vec<VarId>,
+        main: usize,
+        separator: Vec<usize>,
         children: Vec<Self>,
-        dim_x: usize,
-        dim_y: usize,
-        blk_x: VarBlock<T>,
-        blk_s: Vec<VarBlock<T>>,
-        // separator: Vec<VarId>,
-        // dim_x: usize,
-        // dim_y: usize,
-        // dim_s: usize,
-        // a: Mat<T>,
-        // b: Vec<Mat<T>>,
-        // b: Mat<T>,
-        // b_ctx: Vec<(VarId, usize, usize)>,
-        xiby: Col<T>,
-        wby: Mat<T>,
+        dim_main: usize,
+        dim_obs: usize,
+        main_lin_var: LinVar<T>,
+        sep_lin_vars: Vec<LinVar<T>>,
+        xib_obs: Col<T>,
+        wb_obs: Mat<T>,
     ) -> Self {
         // Allocate workspaces
-        let wby_a = Mat::zeros(dim_y, dim_x);
-        let xitx = Col::zeros(dim_x);
-        let wtx = Mat::zeros(dim_x, dim_x);
-        let wtx_s = Diag::zeros(dim_x);
-        let wtx_u = Mat::zeros(dim_x, dim_x);
-        let wtx_v = Mat::zeros(dim_x, dim_x);
-        let vtx = Mat::zeros(dim_x, dim_x);
-        let b_s = Col::zeros(dim_y);
-        let vtx_xitx = Col::zeros(dim_x);
-        let vtx_at_wby = Mat::zeros(dim_x, dim_y);
+        let wby_a = Mat::zeros(dim_obs, dim_main);
+        let xitx = Col::zeros(dim_main);
+        let wtx = Mat::zeros(dim_main, dim_main);
+        let wtx_s = Diag::zeros(dim_main);
+        let wtx_u = Mat::zeros(dim_main, dim_main);
+        let wtx_v = Mat::zeros(dim_main, dim_main);
+        let vtx = Mat::zeros(dim_main, dim_main);
+        let b_s = Col::zeros(dim_obs);
+        let vtx_xitx = Col::zeros(dim_main);
+        let vtx_at_wby = Mat::zeros(dim_main, dim_obs);
 
         let svd_memory = svd::svd_scratch::<T>(
-            dim_x,
-            dim_x,
+            dim_main,
+            dim_main,
             svd::ComputeSvdVectors::Full,
             svd::ComputeSvdVectors::Full,
             Par::Seq,
             Spec::default(),
         );
         let pseudo_inverse_memory =
-            svd::pseudoinverse_from_svd_scratch::<T>(dim_x, dim_x, Par::Seq);
+            svd::pseudoinverse_from_svd_scratch::<T>(dim_main, dim_main, Par::Seq);
         let mem_buf = MemBuffer::new(svd_memory.or(pseudo_inverse_memory));
 
         let node = Self {
             main,
             separator,
             children,
-            dim_x,
-            dim_y,
-            blk_x,
-            blk_s,
-            xiby,
-            wby,
+            dim_main,
+            dim_obs,
+            main_lin_var,
+            sep_lin_vars,
+            xib_obs,
+            wb_obs,
             wby_a,
             xitx,
             wtx,
@@ -147,18 +139,24 @@ where
         node
     }
 
-    /// Create a [`GaussianFactor`] by eliminating the [`GaussianNode`]'s main variable.
-    /// The backward messages are computed via the SVD decomposition of `wtx` which is the
-    /// most stable method to solve linear systems wtx c = d.
-    /// At the end of this method call, the following fields are loaded:
-    /// `wby_a`, `xitx`, `wtx`, `wtx_s`, `wtx_u`, `wtx_v`, `vtx`,
+    /// Eliminates the node's main variable to produce an outgoing marginal [`GaussianFactor`].
+    ///
+    /// Updates internal workspaces during elimination, notably:
+    /// - `wby_a`: intermediate factor workspace.
+    /// - `xitx`, `wtx`: total weighted mean and precision of the eliminated variable.
+    /// - `wtx_u`, `wtx_s`, `wtx_v`: SVD components of `wtx`.
+    /// - `vtx`: Moore–Penrose pseudo-inverse of `wtx`, derived via SVD (implementation detail subject to change).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if numerical factorization (such as the SVD of `wtx`) fails.
     fn eliminate(&mut self) -> Result<GaussianFactor<T>> {
-        // Load wby a
+        // Load wby_a
         matmul(
             self.wby_a.as_mut(),
             Accum::Replace,
-            self.wby.as_ref(),
-            self.blk_x.a.as_ref(),
+            self.wb_obs.as_ref(),
+            self.main_lin_var.mat.as_ref(),
             T::one(),
             Par::Seq,
         );
@@ -167,8 +165,8 @@ where
         matmul(
             self.xitx.as_mat_mut(),
             Accum::Replace,
-            self.blk_x.a.transpose(),
-            self.xiby.as_mat(),
+            self.main_lin_var.mat.transpose(),
+            self.xib_obs.as_mat(),
             T::one(),
             Par::Seq,
         );
@@ -177,7 +175,7 @@ where
         matmul(
             self.wtx.as_mut(),
             Accum::Replace,
-            self.blk_x.a.transpose(),
+            self.main_lin_var.mat.transpose(),
             self.wby_a.as_ref(),
             T::one(),
             Par::Seq,
@@ -226,7 +224,7 @@ where
             T::one(),
             Par::Seq,
         ); // vtx xitx
-        let mut xibz = self.xiby.clone();
+        let mut xibz = self.xib_obs.clone();
         matmul(
             xibz.as_mat_mut(),
             Accum::Add,
@@ -245,7 +243,7 @@ where
             T::one(),
             Par::Seq,
         ); // vtx a.t wby
-        let mut wbz = self.wby.clone();
+        let mut wbz = self.wb_obs.clone();
         matmul(
             wbz.as_mut(),
             Accum::Add,
@@ -255,22 +253,13 @@ where
             Par::Seq,
         ); // wbz = wby - wby a vtx a.t wby
 
-        let msg = GaussianFactor {
-            vars: self.separator.clone(),
-            blk_x: self.blk_s.clone(),
-            dim_y: self.dim_y,
-            xiby: xibz,
-            wby: wbz,
-        };
+        let msg = GaussianFactor::new(self.sep_lin_vars.clone(), xibz, wbz);
 
         Ok(msg)
     }
 
-    /// Decides the value of the node's variables using the current state of the tree.
-    /// Warning:
-    /// - `tmp_y` must be preloaded with b s!
-    /// - A few fields must be up-to-date: `xitx`, `wtx_svd`, and `wby_a`.
-    /// - `x` must be a mutable slice of the same length as the node's x dimension.
+    /// Decides the value of the main variable based on the values of its separator variables.
+    /// Warning: before calling, make sure the (private) fields `vtx_xitx`, `vtx_at_wby`, and `b_s` are up-to-date.
     pub fn decide(&mut self, x: &mut [T]) {
         let mut x_col = ColMut::from_slice_mut(x);
         x_col.copy_from(self.vtx_xitx.as_ref());
@@ -316,13 +305,8 @@ where
         let branch_marker = if is_last { "└── " } else { "├── " };
         writeln!(
             f,
-            "{}{}[Var: {}, Separator: {:?}, Wby: {:?}, xiby: {:?}]",
-            prefix,
-            branch_marker,
-            self.blk_x.id,
-            self.blk_s.iter().map(|blk| blk.id).collect::<Vec<VarId>>(),
-            self.wby,
-            self.xiby
+            "{}{}[Var: {}, Separator: {:?}]",
+            prefix, branch_marker, self.main, self.separator,
         )?;
 
         let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
@@ -336,31 +320,32 @@ where
     }
 }
 
-/// A tree-structure Gaussian factor graph defined by its roots.
-/// Nodes are defined recursively.
+/// An elimination tree (forest) for a Gaussian factor graph.
+///
+/// Encapsulates the numerical factor graph organized into one or more rooted
+/// trees, where each subtree represents a recursive elimination clique.
 pub struct GaussianTree<T> {
+    /// Root nodes corresponding to the independent elimination trees in the forest.
     pub roots: Vec<GaussianNode<T>>,
-}
-
-impl<T> SymbolicFactor for GaussianFactor<T> {
-    fn vars(&self) -> &[VarId] {
-        &self.vars
-    }
 }
 
 impl<T> NumericTree for GaussianTree<T>
 where
     T: Send + Sync + Copy + RealField + Display + Debug,
 {
-    /// The concrete node type.
+    /// Tree node type encapsulating the elimination clique and its workspaces.
     type Node = GaussianNode<T>;
-    /// The original raw numerical factor.
+
+    /// Input factor type representing local Gaussian observation constraints.
     type Factor = GaussianFactor<T>;
-    /// The mathematical message passed upward during elimination.
+
+    /// Upward marginal message type passed from children to parents during elimination.
     type Message = GaussianFactor<T>;
-    /// The type of variable values
+
+    /// Scalar element type for variable vectors and numerical operations.
     type Value = T;
-    /// User-provided context passed up during the build and the solve.
+
+    /// Shared variable index map context threaded through build and solve passes.
     type Context = VarDict;
 
     // ==========================================
@@ -388,74 +373,68 @@ where
     }
 
     fn build_node(
-        main: VarId,
-        separator: Vec<VarId>,
+        main: usize,
+        separator: Vec<usize>,
         assigned_factors: Vec<&Self::Factor>,
         incoming_messages: Vec<Self::Message>,
         children: Vec<Self::Node>,
         ctx: &Self::Context,
     ) -> Result<Self::Node> {
-        // Create the context for the separator variables
-        // let mut b_ctx = Vec::with_capacity(separator.len());
-        // let mut start = 0;
-        // for &sep in &separator {
-        //     let dim = ctx
-        //         .get_size(sep)
-        //         .with_context(|| format!("Missing size for variable with id: {}", sep))?;
-        //     b_ctx.push((sep, start, dim));
-        //     start += dim;
-        // }
-        // let dim_s = start; // the total dimension of the separator variables
-
         // Init observation states
-        let dim_y = assigned_factors.iter().map(|f| f.dim_y).sum::<usize>()
-            + incoming_messages.iter().map(|m| m.dim_y).sum::<usize>();
-        let mut xiby = Col::zeros(dim_y);
-        let mut wby = Mat::zeros(dim_y, dim_y);
+        let dim_obs = assigned_factors.iter().map(|f| f.dim_obs).sum::<usize>()
+            + incoming_messages.iter().map(|m| m.dim_obs).sum::<usize>();
+        let mut xiby = Col::zeros(dim_obs);
+        let mut wby = Mat::zeros(dim_obs, dim_obs);
 
         // Init main variable block
-        let dim_x = ctx
+        let dim_main = ctx
             .get_size(main)
             .with_context(|| format!("Missing size for variable with id: {}", main))?;
-        let mut blk_x = VarBlock {
+        let mut main_lin_var = LinVar {
             id: main,
-            a: Mat::zeros(dim_y, dim_x),
+            mat: Mat::zeros(dim_obs, dim_main),
         };
 
         // Init separator variables blocks
-        let mut blk_s = Vec::with_capacity(separator.len());
+        let mut sep_lin_vars = Vec::with_capacity(separator.len());
         for &sep in &separator {
             let dim_u = ctx
                 .get_size(sep)
                 .with_context(|| format!("Missing size for variable with id: {}", sep))?;
-            blk_s.push(VarBlock {
+            sep_lin_vars.push(LinVar {
                 id: sep,
-                a: Mat::zeros(dim_y, dim_u),
+                mat: Mat::zeros(dim_obs, dim_u),
             });
         }
 
         let mut offset_obs = 0;
         for factor in assigned_factors.into_iter().chain(incoming_messages.iter()) {
-            let size_obs = factor.dim_y;
+            let size_obs = factor.dim_obs;
 
             // Populate xiby
             xiby.as_mut()
                 .subrows_mut(offset_obs, size_obs)
-                .copy_from(&factor.xiby);
+                .copy_from(&factor.xib_obs);
 
             // Populate wby
             wby.submatrix_mut(offset_obs, offset_obs, size_obs, size_obs)
-                .copy_from(&factor.wby);
+                .copy_from(&factor.wb_obs);
 
             // Populate a
-            if let Some(fblk) = factor.get_blk(main) {
-                blk_x.a.subrows_mut(offset_obs, size_obs).copy_from(&fblk.a);
+            if let Some(lin_var) = factor.get_lin_var(main) {
+                main_lin_var
+                    .mat
+                    .subrows_mut(offset_obs, size_obs)
+                    .copy_from(&lin_var.mat);
             }
 
             // Populate b
-            for blk_u in blk_s.iter_mut() {
-                if let Some(fblk) = factor.get_blk(blk_u.id) {
-                    blk_u.a.subrows_mut(offset_obs, size_obs).copy_from(&fblk.a);
+            for sep_lin_var in sep_lin_vars.iter_mut() {
+                if let Some(lin_var) = factor.get_lin_var(sep_lin_var.id) {
+                    sep_lin_var
+                        .mat
+                        .subrows_mut(offset_obs, size_obs)
+                        .copy_from(&lin_var.mat);
                 }
             }
 
@@ -463,7 +442,15 @@ where
         }
 
         let node = GaussianNode::new(
-            main, separator, children, dim_x, dim_y, blk_x, blk_s, xiby, wby,
+            main,
+            separator,
+            children,
+            dim_main,
+            dim_obs,
+            main_lin_var,
+            sep_lin_vars,
+            xiby,
+            wby,
         );
 
         Ok(node)
@@ -473,22 +460,29 @@ where
         node.eliminate()
     }
 
-    /// Decide the node value by reading separator values from the buffer.
+    /// Solve the main value from the separator values read from the buffer.
     fn decide_node(
         node: &mut Self::Node,
         buffer: &ConcurrentStateBuffer<Self::Value>,
         ctx: &Self::Context,
     ) -> Result<()> {
-        // Gather separator values from the global buffer directly into the node's workspace (tmp_y)
+        // Gather separator values from the global buffer directly into the node's workspace (b_s)
         node.b_s.fill(T::zero());
-        for blk in &node.blk_s {
-            let (offset, size) = ctx
-                .get_memory_layout(blk.id)
-                .with_context(|| format!("Missing offset for variable with id: {}", blk.id))?;
+        for sep_lin_var in &node.sep_lin_vars {
+            let (offset, size) = ctx.get_memory_layout(sep_lin_var.id).with_context(|| {
+                format!("Missing offset for variable with id: {}", sep_lin_var.id)
+            })?;
 
             unsafe {
                 let s = ColRef::from_slice(buffer.read_slice(offset, size));
-                matmul(node.b_s.as_mut(), Accum::Add, &blk.a, s, T::one(), Par::Seq);
+                matmul(
+                    node.b_s.as_mut(),
+                    Accum::Add,
+                    &sep_lin_var.mat,
+                    s,
+                    T::one(),
+                    Par::Seq,
+                );
             }
         }
 
@@ -519,7 +513,7 @@ where
             writeln!(
                 f,
                 "Root [Var: {}, Separator: {:?}, Observation Dimension: {}]",
-                root.main, root.separator, root.dim_y
+                root.main, root.separator, root.dim_obs
             )?;
 
             // Print all children recursively

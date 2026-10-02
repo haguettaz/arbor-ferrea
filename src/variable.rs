@@ -1,5 +1,3 @@
-pub type VarId = usize;
+//! Variables-related modules.
 
-// pub mod lie;
 pub mod dictionary;
-pub mod gaussian;

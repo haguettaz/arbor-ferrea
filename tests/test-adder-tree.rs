@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 
+use arbor_ferrea::factor::symbolic::SymbolicFactor;
 use arbor_ferrea::tree::numeric::{ConcurrentStateBuffer, NumericTree};
-use arbor_ferrea::tree::symbolic::{SymbolicFactor, SymbolicTree};
-use arbor_ferrea::variable::VarId;
+use arbor_ferrea::tree::symbolic::SymbolicTree;
 use arbor_ferrea::variable::dictionary::{VarDict, VarSymbol};
 
 struct AdderNode {
-    var: VarId,
-    separator: Vec<VarId>,
+    var: usize,
+    separator: Vec<usize>,
     children: Vec<AdderNode>,
     value: i32,
 }
@@ -17,18 +17,18 @@ struct AdderTree {
 }
 
 struct AdderFactor {
-    vars: Vec<VarId>,
+    vars: Vec<usize>,
     value: i32,
 }
 
 impl SymbolicFactor for AdderFactor {
-    fn vars(&self) -> &[VarId] {
+    fn vars(&self) -> &[usize] {
         &self.vars
     }
 }
 
 struct AdderMessage {
-    _vars: Vec<VarId>,
+    _vars: Vec<usize>,
     value: i32,
 }
 
@@ -69,8 +69,8 @@ impl NumericTree for AdderTree {
     }
 
     fn build_node(
-        var: VarId,
-        separator: Vec<VarId>,
+        var: usize,
+        separator: Vec<usize>,
         assigned_factors: Vec<&Self::Factor>,
         incoming_messages: Vec<Self::Message>,
         children: Vec<Self::Node>,

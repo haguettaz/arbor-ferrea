@@ -4,8 +4,6 @@ A dictionary module to make the interface between the user and the solver.
 
 use std::collections::HashMap;
 
-use super::VarId;
-
 /// A lightweight semantic identifier (e.g., 'x'1, 'l'5)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VarSymbol(pub char, pub usize);
@@ -13,10 +11,10 @@ pub struct VarSymbol(pub char, pub usize);
 /// Maps user-friendly VarSymbol to dense solver indices and tracks memory offsets.
 #[derive(Default)]
 pub struct VarDict {
-    // Forward lookup: VarSymbol -> Dense VarId
-    sym_to_id: HashMap<VarSymbol, VarId>,
+    // Forward lookup: VarSymbol -> Dense usize
+    sym_to_id: HashMap<VarSymbol, usize>,
 
-    // Reverse lookup: Dense VarId -> VarSymbol
+    // Reverse lookup: Dense usize -> VarSymbol
     id_to_sym: Vec<VarSymbol>,
 
     // Physical dimension (e.g., 6 for Pose3, 3 for Point3)
@@ -34,8 +32,8 @@ impl VarDict {
     }
 
     /// Registers a variable and its physical dimension.
-    /// Returns the assigned dense VarId.
-    pub fn register(&mut self, sym: VarSymbol, size: usize) -> VarId {
+    /// Returns the assigned id.
+    pub fn register(&mut self, sym: VarSymbol, size: usize) -> usize {
         if let Some(&id) = self.sym_to_id.get(&sym) {
             return id;
         }
@@ -51,28 +49,28 @@ impl VarDict {
         id
     }
 
-    /// Translates a user VarSymbol to the solver's dense VarId
-    pub fn get_id(&self, sym: VarSymbol) -> Option<VarId> {
+    /// Translates a user variable symbol to the solver's dense id
+    pub fn get_id(&self, sym: VarSymbol) -> Option<usize> {
         self.sym_to_id.get(&sym).copied()
     }
 
-    /// Translates a solver's dense VarId back to the user VarSymbol
-    pub fn get_symbol(&self, id: VarId) -> Option<VarSymbol> {
+    /// Translates a solver's dense id back to the user variable symbol
+    pub fn get_symbol(&self, id: usize) -> Option<VarSymbol> {
         self.id_to_sym.get(id).copied()
     }
 
     /// Returns the size
-    pub fn get_size(&self, id: VarId) -> Option<usize> {
+    pub fn get_size(&self, id: usize) -> Option<usize> {
         self.id_to_size.get(id).copied()
     }
 
     /// Returns the exact memory offset for the global flat state vector
-    pub fn get_offset(&self, id: VarId) -> Option<usize> {
+    pub fn get_offset(&self, id: usize) -> Option<usize> {
         self.id_to_offset.get(id).copied()
     }
 
     /// Returns the memory layout in the global flat state vector
-    pub fn get_memory_layout(&self, id: VarId) -> Option<(usize, usize)> {
+    pub fn get_memory_layout(&self, id: usize) -> Option<(usize, usize)> {
         match (self.id_to_offset.get(id), self.id_to_size.get(id)) {
             (Some(&offset), Some(&size)) => Some((offset, size)),
             _ => None,

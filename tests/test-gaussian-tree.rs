@@ -6,13 +6,13 @@
 use faer::prelude::*;
 
 use arbor_ferrea::factor::anchor::AnchorFactor;
-use arbor_ferrea::factor::gaussian::{GaussianFactor, preprocess_factors};
+use arbor_ferrea::factor::gaussian::{GaussianFactor, LinVar, preprocess_factors};
+use arbor_ferrea::factor::symbolic::SymbolicFactor;
 use arbor_ferrea::helper::build_buffer;
 use arbor_ferrea::tree::gaussian::GaussianTree;
 use arbor_ferrea::tree::numeric::NumericTree;
-use arbor_ferrea::tree::symbolic::{SymbolicFactor, SymbolicTree};
+use arbor_ferrea::tree::symbolic::SymbolicTree;
 use arbor_ferrea::variable::dictionary::{VarDict, VarSymbol};
-use arbor_ferrea::variable::gaussian::VarBlock;
 
 #[test]
 /// Context: singular system with no constraint
@@ -69,13 +69,13 @@ fn run_solver_singular() {
     let mut factors = vec![
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x1,
-                    a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
                 },
             ],
             col![0.2, 1.0, -0.5],
@@ -83,13 +83,13 @@ fn run_solver_singular() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
-                VarBlock {
+                LinVar {
                     id: x3,
-                    a: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
                 },
             ],
             col![-0.1, 0.8, 0.1],
@@ -97,13 +97,13 @@ fn run_solver_singular() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x1,
-                    a: mat![[0.5, 0.5, 0.0], [0.0, 0.75, 0.25]],
+                    mat: mat![[0.5, 0.5, 0.0], [0.0, 0.75, 0.25]],
                 },
-                VarBlock {
+                LinVar {
                     id: l1,
-                    a: mat![[-1.0, 0.0], [0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0], [0.0, -1.0]],
                 },
             ],
             col![0.0, 0.5],
@@ -111,13 +111,13 @@ fn run_solver_singular() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
+                    mat: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
                 },
-                VarBlock {
+                LinVar {
                     id: l1,
-                    a: mat![[-0.5, -0.5], [0.0, -0.8]],
+                    mat: mat![[-0.5, -0.5], [0.0, -0.8]],
                 },
             ],
             col![0.1, 0.2],
@@ -125,13 +125,13 @@ fn run_solver_singular() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x3,
-                    a: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
+                    mat: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
                 },
-                VarBlock {
+                LinVar {
                     id: l2,
-                    a: mat![[-0.5, -0.5], [0.0, -0.8]],
+                    mat: mat![[-0.5, -0.5], [0.0, -0.8]],
                 },
             ],
             col![0.8, 0.0],
@@ -183,13 +183,13 @@ fn run_solver_anchored() {
     let mut factors = vec![
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x1,
-                    a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
                 },
             ],
             col![0.2, 1.0, -0.5],
@@ -197,13 +197,13 @@ fn run_solver_anchored() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
-                VarBlock {
+                LinVar {
                     id: x3,
-                    a: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
                 },
             ],
             col![-0.1, 0.8, 0.1],
@@ -211,13 +211,13 @@ fn run_solver_anchored() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x1,
-                    a: mat![[0.5, 0.5, 0.0], [0.0, 0.75, 0.25]],
+                    mat: mat![[0.5, 0.5, 0.0], [0.0, 0.75, 0.25]],
                 },
-                VarBlock {
+                LinVar {
                     id: l1,
-                    a: mat![[-1.0, 0.0], [0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0], [0.0, -1.0]],
                 },
             ],
             col![0.0, 0.5],
@@ -225,13 +225,13 @@ fn run_solver_anchored() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
+                    mat: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
                 },
-                VarBlock {
+                LinVar {
                     id: l1,
-                    a: mat![[-0.5, -0.5], [0.0, -0.8]],
+                    mat: mat![[-0.5, -0.5], [0.0, -0.8]],
                 },
             ],
             col![0.1, 0.2],
@@ -239,13 +239,13 @@ fn run_solver_anchored() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x3,
-                    a: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
+                    mat: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
                 },
-                VarBlock {
+                LinVar {
                     id: l2,
-                    a: mat![[-0.5, -0.5], [0.0, -0.8]],
+                    mat: mat![[-0.5, -0.5], [0.0, -0.8]],
                 },
             ],
             col![0.8, 0.0],
@@ -273,7 +273,7 @@ fn run_solver_anchored() {
     // 0. Preprocess factors: eliminate anchored variables and init buffer properly
     let res = preprocess_factors(&mut factors, &anchors);
     assert!(res.is_ok());
-    assert!(factors.iter().all(|f| !f.vars.contains(&x1)));
+    assert!(factors.iter().all(|f| !f.contains(x1)));
     let res = build_buffer(&anchors, &dict, f64::NAN);
     assert!(res.is_ok());
     let mut out = res.unwrap();
@@ -316,22 +316,22 @@ fn run_solver() {
     // Build the Gaussian factors
     let mut factors = vec![
         GaussianFactor::new(
-            vec![VarBlock {
+            vec![LinVar {
                 id: x1,
-                a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             }],
             col![0.0, 0.0, 0.0],
             mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x1,
-                    a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
                 },
             ],
             col![0.2, 1.0, -0.5],
@@ -339,13 +339,13 @@ fn run_solver() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    mat: mat![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
-                VarBlock {
+                LinVar {
                     id: x3,
-                    a: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
                 },
             ],
             col![-0.1, 0.8, 0.1],
@@ -353,13 +353,13 @@ fn run_solver() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x1,
-                    a: mat![[0.5, 0.5, 0.0], [0.0, 0.75, 0.25]],
+                    mat: mat![[0.5, 0.5, 0.0], [0.0, 0.75, 0.25]],
                 },
-                VarBlock {
+                LinVar {
                     id: l1,
-                    a: mat![[-1.0, 0.0], [0.0, -1.0]],
+                    mat: mat![[-1.0, 0.0], [0.0, -1.0]],
                 },
             ],
             col![0.0, 0.5],
@@ -367,13 +367,13 @@ fn run_solver() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x2,
-                    a: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
+                    mat: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
                 },
-                VarBlock {
+                LinVar {
                     id: l1,
-                    a: mat![[-0.5, -0.5], [0.0, -0.8]],
+                    mat: mat![[-0.5, -0.5], [0.0, -0.8]],
                 },
             ],
             col![0.1, 0.2],
@@ -381,13 +381,13 @@ fn run_solver() {
         ),
         GaussianFactor::new(
             vec![
-                VarBlock {
+                LinVar {
                     id: x3,
-                    a: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
+                    mat: mat![[0.6, 0.4, 0.0], [0.1, 0.8, 0.1]],
                 },
-                VarBlock {
+                LinVar {
                     id: l2,
-                    a: mat![[-0.5, -0.5], [0.0, -0.8]],
+                    mat: mat![[-0.5, -0.5], [0.0, -0.8]],
                 },
             ],
             col![0.8, 0.0],

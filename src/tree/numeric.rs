@@ -1,4 +1,4 @@
-//! A parallel tree-based numerical solver.
+//! Abstract implementation of a parallel tree-based numerical solver.
 //!
 //! Numerical factorizations proceed bottom-up over the symbolic tree, spawning
 //! parent tasks as child dependencies resolve. A subsequent top-down pass solves
@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use super::symbolic::{SymbolicNode, SymbolicTree};
-use crate::variable::VarId;
 
 use std::ptr;
 
@@ -64,15 +63,19 @@ impl<T: Copy> ConcurrentStateBuffer<T> {
 // ==========================================
 
 pub trait NumericTree: Sized + Send + Sync {
-    /// The concrete node type.
+    /// Tree node type encapsulating the elimination clique and its workspaces.
     type Node: Send + Sync;
-    /// The original raw numerical factor.
+
+    /// Input factor type constraining the variables.
     type Factor: Sync;
-    /// The mathematical message passed upward during elimination.
+
+    /// Upward marginal message type passed from children to parents during elimination.
     type Message: Send + Sync;
-    /// The type of variable values
+
+    /// Scalar element type for variables and numerical operations
     type Value: Copy + Send + Sync;
-    /// User-provided context passed up during the build and the solve.
+
+    /// User-provided context threaded through build and solve passes.
     type Context: Send + Sync;
 
     // ==========================================
@@ -87,10 +90,10 @@ pub trait NumericTree: Sized + Send + Sync {
     fn node_children(node: &Self::Node) -> &[Self::Node];
     fn node_children_mut(node: &mut Self::Node) -> &mut [Self::Node];
 
-    /// Combines factors/messages to construct a node (var, separator)
+    /// Combines factors/messages to construct a node (main, separator)
     fn build_node(
-        var: VarId,
-        separator: Vec<VarId>,
+        main: usize,
+        separator: Vec<usize>,
         assigned_factors: Vec<&Self::Factor>,
         incoming_messages: Vec<Self::Message>,
         children: Vec<Self::Node>,

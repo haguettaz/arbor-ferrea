@@ -1,3 +1,5 @@
+//! Some useful helper functions.
+
 use anyhow::{Context, Result};
 
 use crate::factor::anchor::AnchorFactor;
