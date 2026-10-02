@@ -8,7 +8,7 @@ pub type FactorId = usize;
 
 /// Represents the sparsity pattern and topology of the tree.
 pub struct SymbolicNode {
-    pub var: VarId,
+    pub main: VarId,
     pub separator: Vec<VarId>,
     pub factors: Vec<FactorId>,
     pub children: Vec<SymbolicNode>,
@@ -29,7 +29,7 @@ pub trait SymbolicFactor {
 impl SymbolicTree {
     /// Builds the symbolic blueprint of the tree.
     /// This is a fast, sequential, purely structural pass.
-    /// Note: the variable in order which are appear in no factor silently ignored.
+    /// Note: the variable in order which appear in no factor silently ignored.
     pub fn build<'a>(
         factors: impl IntoIterator<Item = &'a dyn SymbolicFactor>,
         order: &[VarId],
@@ -45,7 +45,8 @@ impl SymbolicTree {
         // Validate that all variables in the factors are accounted for in the order
         let seen_in_factors: HashSet<VarId> = factors_vec
             .iter()
-            .flat_map(|f| f.vars().iter().copied())
+            .flat_map(|f| f.vars().iter())
+            .cloned()
             .collect();
 
         for var in &seen_in_factors {
@@ -135,22 +136,22 @@ impl SymbolicTree {
     }
 
     fn build_node(
-        var: VarId,
+        main: VarId,
         children_map: &HashMap<VarId, Vec<VarId>>,
         separator_map: &HashMap<VarId, Vec<VarId>>,
         factors_map: &HashMap<VarId, Vec<FactorId>>,
     ) -> SymbolicNode {
         let children = children_map
-            .get(&var)
+            .get(&main)
             .unwrap_or(&vec![])
             .iter()
             .map(|&child_var| Self::build_node(child_var, children_map, separator_map, factors_map))
             .collect();
 
         SymbolicNode {
-            var,
-            separator: separator_map.get(&var).cloned().unwrap_or_default(),
-            factors: factors_map.get(&var).cloned().unwrap_or_default(),
+            main,
+            separator: separator_map.get(&main).cloned().unwrap_or_default(),
+            factors: factors_map.get(&main).cloned().unwrap_or_default(),
             children,
         }
     }
@@ -166,8 +167,8 @@ impl Display for SymbolicTree {
             // Print the root node
             writeln!(
                 f,
-                "Root [Var: {}, Factors: {:?}, SepVars: {:?}]",
-                root.var, root.factors, root.separator
+                "Root [Var: {}, Factors: {:?}, Separator: {:?}]",
+                root.main, root.factors, root.separator
             )?;
 
             // Print all children recursively
@@ -192,8 +193,8 @@ impl SymbolicNode {
 
         writeln!(
             f,
-            "{}{}[Var: {}, Factors: {:?}]",
-            prefix, branch_marker, self.var, self.factors
+            "{}{}[Main: {}, Factors: {:?}]",
+            prefix, branch_marker, self.main, self.factors
         )?;
 
         let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
@@ -241,6 +242,6 @@ mod tests {
         let tree = tree_result.unwrap();
         // Since variable 2 is eliminated last, it acts as the root of the tree
         assert_eq!(tree.roots.len(), 1);
-        assert_eq!(tree.roots[0].var, 2);
+        assert_eq!(tree.roots[0].main, 2);
     }
 }

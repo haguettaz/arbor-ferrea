@@ -1,3 +1,7 @@
+/*!
+A dictionary module to make the interface between the user and the solver.
+*/
+
 use std::collections::HashMap;
 
 use super::VarId;

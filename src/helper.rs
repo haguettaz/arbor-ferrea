@@ -15,21 +15,21 @@ pub fn build_buffer<T: Copy + Send + Sync>(
     let mut seen = std::collections::HashSet::with_capacity(anchor_factors.len());
     for factor in anchor_factors {
         let (offset, size) = context
-            .get_memory_layout(factor.var)
-            .with_context(|| format!("Missing layout for anchor variable {}", factor.var))?;
+            .get_memory_layout(factor.id)
+            .with_context(|| format!("Missing layout for anchor variable {}", factor.id))?;
         anyhow::ensure!(
-            factor.val.len() == size,
+            factor.value.len() == size,
             "Anchor value length ({}) does not match variable size ({}) for variable {}",
-            factor.val.len(),
+            factor.value.len(),
             size,
-            factor.var
+            factor.id
         );
         anyhow::ensure!(
-            seen.insert(factor.var),
+            seen.insert(factor.id),
             "Duplicate anchor for variable {}",
-            factor.var
+            factor.id
         );
-        buffer[offset..offset + size].copy_from_slice(&factor.val);
+        buffer[offset..offset + size].copy_from_slice(&factor.value);
     }
     Ok(buffer)
 }

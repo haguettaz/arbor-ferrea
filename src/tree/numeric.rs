@@ -1,3 +1,10 @@
+//! A parallel tree-based numerical solver.
+//!
+//! Numerical factorizations proceed bottom-up over the symbolic tree, spawning
+//! parent tasks as child dependencies resolve. A subsequent top-down pass solves
+//! independent branches concurrently, writing results into a provably race-free
+//! shared buffer.
+
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 
@@ -131,7 +138,7 @@ pub trait NumericTree: Sized + Send + Sync {
         context: &Self::Context,
     ) -> Result<(Self::Node, Self::Message)> {
         // 1. Recurse down to children in parallel. (Rayon waits for them implicitly)
-        let var = sym_node.var;
+        let id = sym_node.main;
         let separator = sym_node.separator.clone();
 
         let child_results: Result<Vec<(Self::Node, Self::Message)>> = sym_node
@@ -153,19 +160,13 @@ pub trait NumericTree: Sized + Send + Sync {
             sym_node.factors.iter().map(|&fid| &factors[fid]).collect();
 
         // Assemble the node
-        let mut node = Self::build_node(
-            var,
-            separator,
-            assigned_factors,
-            messages,
-            children,
-            context,
-        )
-        .with_context(|| format!("Failed to build node for variable {var}"))?;
+        let mut node =
+            Self::build_node(id, separator, assigned_factors, messages, children, context)
+                .with_context(|| format!("Failed to build node for variable {id}"))?;
 
         // Eliminate the node to produce the message for its parent
         let out_msg = Self::build_out_message(&mut node, context)
-            .with_context(|| format!("Failed to build outgoing message for variable {var}"))?;
+            .with_context(|| format!("Failed to build outgoing message for variable {id}"))?;
 
         Ok((node, out_msg))
     }
@@ -197,6 +198,3 @@ pub trait NumericTree: Sized + Send + Sync {
             .try_for_each(|child| Self::solve_node_par(child, buffer, ctx))
     }
 }
-
-#[cfg(test)]
-mod tests {}
