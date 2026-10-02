@@ -15,6 +15,7 @@ The architecture draws heavy inspiration from [gtsam](https://gtsam.org).
 - [x] Gaussian tree assembly (variable elimination = max-product Gaussian message-passing)
 - [x] Solving (max-product deciding)
 - [x] Parallel build and solve
+- [ ] Autodifferentiation
 - [ ] Incremental updates
 - [ ] Fluid relinearization (iSAM2)
 - [ ] Variable elimination heuristics (COLAMD / Constrained COLAMD)
@@ -25,7 +26,7 @@ The architecture draws heavy inspiration from [gtsam](https://gtsam.org).
 - [ ] Point representations ($\mathbb{R}^2$, $\mathbb{R}^3$)
 
 ### Robust Estimation & Factors
-- [ ] Handle fixed variables via anchoring factors
+- [x] Handle fixed variables via anchoring factors
 - [ ] Implement common SLAM constraints
 - [ ] NUP integration
 
