@@ -1,11 +1,16 @@
-use anyhow::Result;
+//! Abstract implementation of a parallel tree-based numerical solver.
+//!
+//! Numerical factorizations proceed bottom-up over the symbolic tree, spawning
+//! parent tasks as child dependencies resolve. A subsequent top-down pass solves
+//! independent branches concurrently, writing results into a provably race-free
+//! shared buffer.
+
+use anyhow::{Context, Result};
 use rayon::prelude::*;
+
+use super::symbolic::{SymbolicNode, SymbolicTree};
+
 use std::ptr;
-
-use crate::tree::symbolic::{SymbolicNode, SymbolicTree};
-
-pub type VarId = usize;
-pub type FactorId = usize;
 
 /// A lock-free wrapper allowing concurrent disjoint writes to a shared slice.
 #[derive(Copy, Clone)]
@@ -31,7 +36,9 @@ impl<T: Copy> ConcurrentStateBuffer<T> {
     #[inline]
     pub unsafe fn write_slice(&self, offset: usize, data: &[T]) {
         debug_assert!(offset + data.len() <= self.len);
-        ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len());
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len());
+        }
     }
 
     /// Reads a slice of values from a specific offset.
@@ -39,7 +46,15 @@ impl<T: Copy> ConcurrentStateBuffer<T> {
     #[inline]
     pub unsafe fn read_slice(&self, offset: usize, len: usize) -> &[T] {
         debug_assert!(offset + len <= self.len);
-        std::slice::from_raw_parts(self.ptr.add(offset), len)
+        unsafe { std::slice::from_raw_parts(self.ptr.add(offset), len) }
+    }
+
+    /// Returns a mutable slice to a specific region of the buffer.
+    /// SAFETY: The caller must ensure no other thread accesses this specific range concurrently.
+    #[inline]
+    pub unsafe fn get_mut_slice<'a>(&self, offset: usize, len: usize) -> &'a mut [T] {
+        debug_assert!(offset + len <= self.len);
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.add(offset), len) }
     }
 }
 
@@ -48,40 +63,52 @@ impl<T: Copy> ConcurrentStateBuffer<T> {
 // ==========================================
 
 pub trait NumericTree: Sized + Send + Sync {
-    /// The original raw numerical factor.
-    type Factor: Sync;
-    /// The concrete node type.
+    /// Tree node type encapsulating the elimination clique and its workspaces.
     type Node: Send + Sync;
-    /// The mathematical message passed upward during elimination.
+
+    /// Input factor type constraining the variables.
+    type Factor: Sync;
+
+    /// Upward marginal message type passed from children to parents during elimination.
     type Message: Send + Sync;
-    /// User-provided context passed down during the solve (e.g., VariableDictionary for offsets).
-    type SolveContext: Sync;
-    /// The numerical type used for solving.
-    type Value: Copy;
+
+    /// Scalar element type for variables and numerical operations
+    type Value: Copy + Send + Sync;
+
+    /// User-provided context threaded through build and solve passes.
+    type Context: Send + Sync;
 
     // ==========================================
     // REQUIRED METHODS (Math & Accessors)
     // ==========================================
 
     fn from_roots(roots: Vec<Self::Node>) -> Self;
-    fn roots(&self) -> &[Self::Node];
-    fn node_children(node: &Self::Node) -> &[Self::Node];
 
-    /// Upward pass math: Combines factors/messages, eliminates the variable,
-    /// and returns the constructed node + outgoing (upward) message.
-    fn eliminate_node(
-        var: VarId,
+    fn roots(&self) -> &[Self::Node];
+    fn roots_mut(&mut self) -> &mut [Self::Node];
+
+    fn node_children(node: &Self::Node) -> &[Self::Node];
+    fn node_children_mut(node: &mut Self::Node) -> &mut [Self::Node];
+
+    /// Combines factors/messages to construct a node (main, separator)
+    fn build_node(
+        main: usize,
+        separator: Vec<usize>,
         assigned_factors: Vec<&Self::Factor>,
-        children: Vec<Self::Node>,
         incoming_messages: Vec<Self::Message>,
-    ) -> Result<(Self::Node, Self::Message)>;
+        children: Vec<Self::Node>,
+        ctx: &Self::Context,
+    ) -> Result<Self::Node>;
+
+    /// Eliminate the variable from the node, returning the outgoing (upward) message.
+    fn build_out_message(node: &mut Self::Node, ctx: &Self::Context) -> Result<Self::Message>;
 
     /// Downward pass math: Reads ancestors from buffer, computes this node's state,
     /// and writes the result back to the buffer.
     fn decide_node(
-        node: &Self::Node,
+        node: &mut Self::Node,
         buffer: &ConcurrentStateBuffer<Self::Value>,
-        ctx: &Self::SolveContext,
+        ctx: &Self::Context,
     ) -> Result<()>;
 
     // ==========================================
@@ -91,13 +118,14 @@ pub trait NumericTree: Sized + Send + Sync {
     /// Builds the numerical tree in parallel by following the symbolic blueprint.
     fn from_symbolic(
         symbolic_tree: &SymbolicTree,
-        numerical_factors: &[Self::Factor],
+        factors: &[Self::Factor],
+        context: &Self::Context,
     ) -> Result<Self> {
         // Process all disjoint roots in parallel
         let root_results: Result<Vec<(Self::Node, Self::Message)>> = symbolic_tree
             .roots
             .par_iter()
-            .map(|sym_root| Self::build_node_par(sym_root, numerical_factors))
+            .map(|sym_root| Self::build_node_par(sym_root, factors, context))
             .collect();
 
         // Unzip the roots and discard the final outgoing messages (roots have no parents)
@@ -109,13 +137,17 @@ pub trait NumericTree: Sized + Send + Sync {
     /// Recursively builds a subtree bottom-up.
     fn build_node_par(
         sym_node: &SymbolicNode,
-        numerical_factors: &[Self::Factor],
+        factors: &[Self::Factor],
+        context: &Self::Context,
     ) -> Result<(Self::Node, Self::Message)> {
         // 1. Recurse down to children in parallel. (Rayon waits for them implicitly)
+        let id = sym_node.main;
+        let separator = sym_node.separator.clone();
+
         let child_results: Result<Vec<(Self::Node, Self::Message)>> = sym_node
             .children
             .par_iter()
-            .map(|sym_child| Self::build_node_par(sym_child, numerical_factors))
+            .map(|sym_child| Self::build_node_par(sym_child, factors, context))
             .collect();
 
         let mut children = Vec::with_capacity(sym_node.children.len());
@@ -126,42 +158,46 @@ pub trait NumericTree: Sized + Send + Sync {
             messages.push(child_msg);
         }
 
-        // 2. Fetch the original numerical factors via symbolic indices
-        let assigned_factors: Vec<&Self::Factor> = sym_node
-            .original_factors
-            .iter()
-            .map(|&fid| &numerical_factors[fid])
-            .collect();
+        // Fetch the original numerical factors via symbolic indices
+        let assigned_factors: Vec<&Self::Factor> =
+            sym_node.factors.iter().map(|&fid| &factors[fid]).collect();
 
-        // 3. Perform elimination
-        Self::eliminate_node(sym_node.var, assigned_factors, children, messages)
+        // Assemble the node
+        let mut node =
+            Self::build_node(id, separator, assigned_factors, messages, children, context)
+                .with_context(|| format!("Failed to build node for variable {id}"))?;
+
+        // Eliminate the node to produce the message for its parent
+        let out_msg = Self::build_out_message(&mut node, context)
+            .with_context(|| format!("Failed to build outgoing message for variable {id}"))?;
+
+        Ok((node, out_msg))
     }
 
     /// Solves the tree top-down in parallel.
     /// `values` is modified in place with the final state update.
-    fn solve_par(&self, values: &mut [Self::Value], ctx: &Self::SolveContext) -> Result<()> {
+    fn solve_par(&mut self, values: &mut [Self::Value], ctx: &Self::Context) -> Result<()> {
         let buffer = ConcurrentStateBuffer::new(values);
 
-        self.roots()
-            .par_iter()
+        // Use par_iter_mut() to safely split mutable access across disjoint roots
+        self.roots_mut()
+            .par_iter_mut()
             .try_for_each(|root| Self::solve_node_par(root, &buffer, ctx))
     }
 
     /// Recursively solves a subtree top-down.
     fn solve_node_par(
-        node: &Self::Node,
+        node: &mut Self::Node,
         buffer: &ConcurrentStateBuffer<Self::Value>,
-        ctx: &Self::SolveContext,
+        ctx: &Self::Context,
     ) -> Result<()> {
         // 1. Compute state and write it directly to the global buffer
         Self::decide_node(node, buffer, ctx)?;
 
-        // 2. Parallelize children instantly (they read from the buffer we just wrote to)
-        Self::node_children(node)
-            .par_iter()
+        // 2. Parallelize children instantly
+        // Use par_iter_mut() to safely split mutable access across disjoint child subtrees
+        Self::node_children_mut(node)
+            .par_iter_mut()
             .try_for_each(|child| Self::solve_node_par(child, buffer, ctx))
     }
 }
-
-#[cfg(test)]
-mod tests {}

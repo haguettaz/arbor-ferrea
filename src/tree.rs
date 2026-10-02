@@ -1,6 +1,5 @@
-pub type VarId = usize;
-pub type FactorId = usize;
+//! The tree-based solver implementations.
 
-// pub mod gaussian;
+pub mod gaussian;
 pub mod numeric;
 pub mod symbolic;

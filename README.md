@@ -12,11 +12,13 @@ The architecture draws heavy inspiration from [gtsam](https://gtsam.org).
 ## 🗺️ Roadmap & Features
 
 ### Gaussian Tree & Solver Core
-- [ ] Upward-filtering (Gaussian tree assembly) downward-deciding (solving)
+- [x] Gaussian tree assembly (variable elimination = max-product Gaussian message-passing)
+- [x] Solving (max-product deciding)
+- [x] Parallel build and solve
+- [ ] Autodifferentiation
 - [ ] Incremental updates
 - [ ] Fluid relinearization (iSAM2)
-- [ ] Variable reordering heuristics (COLAMD / Constrained COLAMD)
-- [ ] Parallel solver execution (on parallel branches)
+- [ ] Variable elimination heuristics (COLAMD / Constrained COLAMD)
 
 ### Geometry & Lie Groups
 - [ ] $SO(2)$ / $SE(2)$ manifold representations (2D SLAM)
@@ -24,8 +26,9 @@ The architecture draws heavy inspiration from [gtsam](https://gtsam.org).
 - [ ] Point representations ($\mathbb{R}^2$, $\mathbb{R}^3$)
 
 ### Robust Estimation & Factors
-- [ ] Common SLAM constraints
-- [ ] NUP (Normal with Unknown Parameters) integration
+- [x] Handle fixed variables via anchoring factors
+- [ ] Implement common SLAM constraints
+- [ ] NUP integration
 
 ---
 
