@@ -1,38 +1,30 @@
-/*!
-A dictionary module to make the interface between the user and the solver.
-*/
+//! Variable indexing and contiguous memory layout mapping.
 
 use std::collections::HashMap;
 
-/// A lightweight semantic identifier (e.g., 'x'1, 'l'5)
+/// A typed semantic variable key (e.g., `'x'` for pose, `'l'` for landmark).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VarSymbol(pub char, pub usize);
 
-/// Maps user-friendly VarSymbol to dense solver indices and tracks memory offsets.
-#[derive(Default)]
+/// Bidirectional map between [`VarSymbol`] keys, dense solver indices, and buffer offsets.
+#[derive(Default, Debug, Clone)]
 pub struct VarDict {
-    // Forward lookup: VarSymbol -> Dense usize
     sym_to_id: HashMap<VarSymbol, usize>,
-
-    // Reverse lookup: Dense usize -> VarSymbol
     id_to_sym: Vec<VarSymbol>,
-
-    // Physical dimension (e.g., 6 for Pose3, 3 for Point3)
     id_to_size: Vec<usize>,
-
-    // Pre-computed starting index in the flat global state array
     id_to_offset: Vec<usize>,
-
     total_dimension: usize,
 }
 
 impl VarDict {
+    /// Creates an empty variable dictionary.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Registers a variable and its physical dimension.
-    /// Returns the assigned id.
+    /// Registers a variable and its dimension, returning its dense identifier.
+    ///
+    /// If `sym` is already registered, returns the existing identifier without modifying state.
     pub fn register(&mut self, sym: VarSymbol, size: usize) -> usize {
         if let Some(&id) = self.sym_to_id.get(&sym) {
             return id;
@@ -49,27 +41,27 @@ impl VarDict {
         id
     }
 
-    /// Translates a user variable symbol to the solver's dense id
+    /// Returns the dense identifier corresponding to `sym`, if registered.
     pub fn get_id(&self, sym: VarSymbol) -> Option<usize> {
         self.sym_to_id.get(&sym).copied()
     }
 
-    /// Translates a solver's dense id back to the user variable symbol
+    /// Returns the symbol corresponding to dense index `id`, if valid.
     pub fn get_symbol(&self, id: usize) -> Option<VarSymbol> {
         self.id_to_sym.get(id).copied()
     }
 
-    /// Returns the size
+    /// Returns the dimension of the variable at `id`, if valid.
     pub fn get_size(&self, id: usize) -> Option<usize> {
         self.id_to_size.get(id).copied()
     }
 
-    /// Returns the exact memory offset for the global flat state vector
+    /// Returns the buffer start offset for the variable at `id`, if valid.
     pub fn get_offset(&self, id: usize) -> Option<usize> {
         self.id_to_offset.get(id).copied()
     }
 
-    /// Returns the memory layout in the global flat state vector
+    /// Returns the `(offset, size)` slice layout in the flat state buffer for `id`, if valid.
     pub fn get_memory_layout(&self, id: usize) -> Option<(usize, usize)> {
         match (self.id_to_offset.get(id), self.id_to_size.get(id)) {
             (Some(&offset), Some(&size)) => Some((offset, size)),
@@ -77,9 +69,19 @@ impl VarDict {
         }
     }
 
-    /// Total size needed to allocate the global state vector (Delta x)
+    /// Returns the total scalar capacity required for the flat state vector.
     pub fn get_total_size(&self) -> usize {
         self.total_dimension
+    }
+
+    /// Returns the number of distinct variables registered.
+    pub fn len(&self) -> usize {
+        self.id_to_sym.len()
+    }
+
+    /// Returns `true` if no variables have been registered.
+    pub fn is_empty(&self) -> bool {
+        self.id_to_sym.is_empty()
     }
 }
 
@@ -98,5 +100,7 @@ mod tests {
         assert_eq!(dict.get_total_size(), 9);
         assert_eq!(x1, 0);
         assert_eq!(l5, 1);
+        assert_eq!(dict.get_memory_layout(x1), Some((0, 6)));
+        assert_eq!(dict.get_memory_layout(l5), Some((6, 3)));
     }
 }

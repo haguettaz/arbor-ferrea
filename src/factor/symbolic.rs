@@ -1,6 +1,6 @@
-//! Module for symbolic factors.
+//! Traits for symbolic factors.
 
-/// A symbolic factor.
+/// A factor defined purely by the variables it connects.
 pub trait SymbolicFactor {
     fn vars(&self) -> &[usize];
 }

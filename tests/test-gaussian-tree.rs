@@ -5,8 +5,8 @@
 
 use faer::prelude::*;
 
-use arbor_ferrea::factor::anchor::AnchorFactor;
 use arbor_ferrea::factor::gaussian::{GaussianFactor, LinVar, preprocess_factors};
+use arbor_ferrea::factor::pin::PinFactor;
 use arbor_ferrea::factor::symbolic::SymbolicFactor;
 use arbor_ferrea::helper::build_buffer;
 use arbor_ferrea::tree::gaussian::GaussianTree;
@@ -179,7 +179,7 @@ fn run_solver_anchored() {
     let l2 = dict.register(VarSymbol('l', 2), 2);
 
     // Build the Gaussian and anchoring factors
-    let anchors = vec![AnchorFactor::new(x1, vec![0.0, 0.0, 0.0])];
+    let anchors = vec![PinFactor::new(x1, vec![0.0, 0.0, 0.0])];
     let mut factors = vec![
         GaussianFactor::new(
             vec![

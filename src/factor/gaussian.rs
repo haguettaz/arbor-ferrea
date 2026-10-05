@@ -1,6 +1,4 @@
-/*!
-A module for Gaussian factors.
-*/
+//! Gaussian factors over linear observation models.
 
 use anyhow::{Result, bail};
 use log::debug;
@@ -10,41 +8,40 @@ use faer::prelude::*;
 use faer::{Accum, ColRef, Par};
 use faer_traits::RealField;
 
-use super::anchor::AnchorFactor;
+use super::pin::PinFactor;
 use super::symbolic::SymbolicFactor;
 
-/// A variable and a linear transformation acting on it.
+/// A variable paired with its linear transformation matrix.
 #[derive(Debug, PartialEq, Clone)]
 pub struct LinVar<T> {
-    /// The variable ID.
+    /// Variable identifier.
     pub id: usize,
-    /// The transformation matrix.
+    /// Transformation matrix.
     pub mat: Mat<T>,
 }
 
-/// A Gaussian factor over a linear observation model
-/// parameterized by a weighted mean vector and a precision matrix.
+/// A Gaussian factor parameterized by an observation precision matrix and weighted mean.
 pub struct GaussianFactor<T> {
-    /// Linear variable blocks coupling each variable to the observation via a transformation matrix.
+    /// Linear variable blocks coupling each variable to the observation.
     pub lin_vars: Vec<LinVar<T>>,
 
-    /// Cached identifiers for the involved variables, aligned with `lin_vars`.
+    /// Identifiers of involved variables, aligned with `lin_vars`.
     vars: Vec<usize>,
 
-    /// Dimension of the observation.
+    /// Observation dimension.
     pub dim_obs: usize,
 
-    /// Observation weighted mean vector with shape `(dim_obs)`.
+    /// Observation weighted mean vector of shape `(dim_obs)`.
     pub xib_obs: Col<T>,
 
-    /// Observation precision matrix with shape `(dim_obs, dim_obs)`.
+    /// Observation precision matrix of shape `(dim_obs, dim_obs)`.
     pub wb_obs: Mat<T>,
 }
 
 impl<T: RealField> GaussianFactor<T> {
-    /// Creates a new Gaussian factor.
-    /// It is the caller responsibility to ensure that all dimensions are compatible.
-    /// For a safe version, see [`Self::try_new`].
+    /// Creates a factor without dimension checks.
+    ///
+    /// See [`try_new`](Self::try_new) for a validated constructor.
     pub fn new(lin_vars: Vec<LinVar<T>>, xib_obs: Col<T>, wb_obs: Mat<T>) -> Self {
         let vars = lin_vars.iter().map(|lin_var| lin_var.id).collect();
 
@@ -59,8 +56,7 @@ impl<T: RealField> GaussianFactor<T> {
         }
     }
 
-    /// Creates a new Gaussian factor after checking all dimensions are compatible.
-    /// For an unchecked version, see [`Self::new`].
+    /// Creates a factor, returning an error if dimensions are mismatched.
     pub fn try_new(lin_vars: Vec<LinVar<T>>, xib_obs: Col<T>, wb_obs: Mat<T>) -> Result<Self> {
         let vars = lin_vars.iter().map(|lin_var| lin_var.id).collect();
 
@@ -95,19 +91,17 @@ impl<T: RealField> GaussianFactor<T> {
         Ok(factor)
     }
 
-    /// Returns a reference to the [`LinVar`] object with the given ID, if any.
+    /// Returns the [`LinVar`] with the given ID, if present.
     pub fn get_lin_var(&self, id: usize) -> Option<&LinVar<T>> {
         self.lin_vars.iter().find(|lin_var| lin_var.id == id)
     }
 
-    /// Test whether a variable is involved in the factor.
+    /// Returns `true` if the factor constrains variable `id`.
     pub fn contains(&self, id: usize) -> bool {
         self.vars.contains(&id)
     }
 
-    /// Eliminates a fixed variable from the factor.
-    /// The following fields are modified in place: `lin_vars`, `vars`, `xib_obs`.
-    /// Note that eliminating a variable does not impact wb_obs.
+    /// Eliminates a pinned variable in place, updating `xib_obs` using `tmp` workspace.
     pub fn eliminate_fixed(&mut self, id: usize, value: &[T], tmp: &mut [T]) -> Result<()> {
         match self
             .lin_vars
@@ -119,7 +113,7 @@ impl<T: RealField> GaussianFactor<T> {
             Some((i, lin_var)) => {
                 anyhow::ensure!(
                     value.len() == lin_var.mat.ncols(),
-                    "Anchor value length ({}) does not match variable {} size ({})",
+                    "Pin value length ({}) does not match variable {} size ({})",
                     value.len(),
                     id,
                     lin_var.mat.ncols()
@@ -158,11 +152,10 @@ impl<T> SymbolicFactor for GaussianFactor<T> {
     }
 }
 
-/// Preprocess Gaussian factors in place by eliminating the anchored (fixed) variables.
-/// See eliminate_fixed method in [`GaussianFactor`] for more details.
+/// Eliminates all pinned variables from the given factors in place.
 pub fn preprocess_factors<T: RealField>(
     gaussian_factors: &mut [GaussianFactor<T>],
-    anchor_factors: &[AnchorFactor<T>],
+    pin_factors: &[PinFactor<T>],
 ) -> Result<()> {
     // Allocate once a sufficiently large workspace to work with all factors.
     let max_dim_obs = gaussian_factors
@@ -172,10 +165,10 @@ pub fn preprocess_factors<T: RealField>(
         .unwrap_or(0);
     let mut tmp = vec![T::zero(); max_dim_obs];
 
-    for anchor in anchor_factors {
+    for pin_factor in pin_factors {
         gaussian_factors
             .iter_mut()
-            .try_for_each(|f| f.eliminate_fixed(anchor.id, &anchor.value, &mut tmp))?;
+            .try_for_each(|f| f.eliminate_fixed(pin_factor.id, &pin_factor.value, &mut tmp))?;
     }
     Ok(())
 }
@@ -281,12 +274,12 @@ mod tests {
             ),
         ];
 
-        let anchor_factors = vec![
-            AnchorFactor::new(0, vec![3.0, 3.0]),
-            AnchorFactor::new(4, vec![-1.0]),
+        let pin_factors = vec![
+            PinFactor::new(0, vec![3.0, 3.0]),
+            PinFactor::new(4, vec![-1.0]),
         ];
 
-        let res = preprocess_factors(&mut gaussian_factors, &anchor_factors);
+        let res = preprocess_factors(&mut gaussian_factors, &pin_factors);
         assert!(res.is_ok());
         assert_eq!(gaussian_factors[0].vars.len(), 1);
         assert_eq!(gaussian_factors[0].vars[0], 1);

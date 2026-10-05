@@ -1,4 +1,4 @@
-//! The tree-based solver implementations.
+//! Tree-based solver implementations.
 
 pub mod gaussian;
 pub mod numeric;

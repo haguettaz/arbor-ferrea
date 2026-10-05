@@ -1,4 +1,7 @@
-//! Lightweight symbolic tree module.
+//! Structural analysis and symbolic elimination trees for factor graphs.
+//!
+//! Simulates variable elimination to determine graph chordal completion, factor
+//! assignments, separator sets, and elimination tree topology prior to numerical solves.
 
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
@@ -6,26 +9,31 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use crate::factor::symbolic::SymbolicFactor;
 
-/// Represents the sparsity pattern and topology of the tree.
+/// A node in a symbolic elimination tree representing an elimination clique.
 pub struct SymbolicNode {
+    /// Variable eliminated at this node.
     pub main: usize,
+    /// Separator variables conditioning this node during elimination.
     pub separator: Vec<usize>,
+    /// Indices of original factors assigned to this node.
     pub factors: Vec<usize>,
+    /// Child nodes in the elimination tree.
     pub children: Vec<SymbolicNode>,
 }
 
+/// An elimination tree forest capturing the factorization topology.
 pub struct SymbolicTree {
+    /// Root nodes of independent elimination trees in the forest.
     pub roots: Vec<SymbolicNode>,
 }
 
-// pub struct SymbolicFactor {
-//     pub vars: Vec<usize>,
-// }
-
 impl SymbolicTree {
-    /// Builds the symbolic blueprint of the tree.
-    /// This is a fast, sequential, purely structural pass.
-    /// Note: the variable in order which appear in no factor silently ignored.
+    /// Constructs a symbolic elimination tree from factors and an elimination ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `order` contains duplicates or misses variables present in `factors`.
+    /// Variables in `order` that appear in no factors are pruned automatically.
     pub fn build<'a>(
         factors: impl IntoIterator<Item = &'a dyn SymbolicFactor>,
         order: &[usize],
@@ -131,6 +139,7 @@ impl SymbolicTree {
         Ok(Self { roots: root_nodes })
     }
 
+    /// Recursively instantiates a [`SymbolicNode`] and its subtree from topology maps.
     fn build_node(
         main: usize,
         children_map: &HashMap<usize, Vec<usize>>,
@@ -183,7 +192,7 @@ impl Display for SymbolicTree {
 }
 
 impl SymbolicNode {
-    /// Helper method to recursively format the tree with ASCII branches
+    /// Recursively formats the node hierarchy as an ASCII tree.
     fn fmt_recursive(&self, f: &mut Formatter<'_>, prefix: &str, is_last: bool) -> FmtResult {
         let branch_marker = if is_last { "└── " } else { "├── " };
 
@@ -220,8 +229,6 @@ mod tests {
 
     #[test]
     fn test_build_tree() {
-        // variables ("x1", 0), ("x2", 1), ("x3", 2), ("l1", 3), ("l2", 4)
-
         let f0 = SimpleSymbolicFactor { vars: vec![0] };
         let f1 = SimpleSymbolicFactor { vars: vec![0, 1] };
         let f2 = SimpleSymbolicFactor { vars: vec![1, 2] };
@@ -229,14 +236,12 @@ mod tests {
         let f4 = SimpleSymbolicFactor { vars: vec![1, 3] };
         let f5 = SimpleSymbolicFactor { vars: vec![2, 4] };
 
-        // We can pass references to dyn SymbolicFactor safely
         let symbolic_factors: [&dyn SymbolicFactor; 6] = [&f0, &f1, &f2, &f3, &f4, &f5];
 
         let tree_result = SymbolicTree::build(symbolic_factors, &[3, 4, 0, 1, 2]);
         assert!(tree_result.is_ok());
 
         let tree = tree_result.unwrap();
-        // Since variable 2 is eliminated last, it acts as the root of the tree
         assert_eq!(tree.roots.len(), 1);
         assert_eq!(tree.roots[0].main, 2);
     }
