@@ -353,7 +353,7 @@ where
         let mut wby = Mat::zeros(dim_obs, dim_obs);
 
         let dim_main = ctx
-            .get_size(main)
+            .size(main)
             .with_context(|| format!("Missing size for variable with id: {}", main))?;
         let mut main_lin_var = LinVar {
             id: main,
@@ -363,7 +363,7 @@ where
         let mut sep_lin_vars = Vec::with_capacity(separator.len());
         for &sep in &separator {
             let dim_u = ctx
-                .get_size(sep)
+                .size(sep)
                 .with_context(|| format!("Missing size for variable with id: {}", sep))?;
             sep_lin_vars.push(LinVar {
                 id: sep,
@@ -382,7 +382,7 @@ where
             wby.submatrix_mut(offset_obs, offset_obs, size_obs, size_obs)
                 .copy_from(&factor.wb_obs);
 
-            if let Some(lin_var) = factor.get_lin_var(main) {
+            if let Some(lin_var) = factor.lin_var(main) {
                 anyhow::ensure!(
                     lin_var.mat.ncols() == dim_main,
                     format!(
@@ -399,7 +399,7 @@ where
             }
 
             for sep_lin_var in sep_lin_vars.iter_mut() {
-                if let Some(lin_var) = factor.get_lin_var(sep_lin_var.id) {
+                if let Some(lin_var) = factor.lin_var(sep_lin_var.id) {
                     anyhow::ensure!(
                         lin_var.mat.ncols() == sep_lin_var.mat.ncols(),
                         format!(
@@ -445,11 +445,11 @@ where
         buffer: &ConcurrentStateBuffer<Self::Value>,
         ctx: &Self::Context,
     ) -> Result<()> {
-        buffer.ensure_len(ctx.get_total_size())?;
+        buffer.ensure_len(ctx.total_size())?;
 
         node.b_s.fill(T::zero());
         for sep_lin_var in &node.sep_lin_vars {
-            let (offset, size) = ctx.get_memory_layout(sep_lin_var.id).with_context(|| {
+            let (offset, size) = ctx.memory_layout(sep_lin_var.id).with_context(|| {
                 format!("Missing offset for variable with id: {}", sep_lin_var.id)
             })?;
             unsafe {
@@ -465,7 +465,7 @@ where
             }
         }
 
-        let (offset, size) = ctx.get_memory_layout(node.main).with_context(|| {
+        let (offset, size) = ctx.memory_layout(node.main).with_context(|| {
             format!("Missing memory layout for variable with id: {}", node.main)
         })?;
         anyhow::ensure!(

@@ -1,6 +1,6 @@
 //! Gaussian factors over linear observation models.
 
-use anyhow::{Result, bail};
+use anyhow::{Result, ensure};
 use log::debug;
 
 use faer::linalg::matmul::matmul;
@@ -39,9 +39,14 @@ pub struct GaussianFactor<T> {
 }
 
 impl<T: RealField> GaussianFactor<T> {
-    /// Creates a factor without dimension checks.
+    /// Creates a factor without validating parameters.
     ///
-    /// See [`try_new`](Self::try_new) for a validated constructor.
+    /// # Safety
+    ///
+    /// The caller must ensure that `wb_obs` is square with dimension matching
+    /// `xib_obs.nrows()`, that all `lin_vars` matrices have `dim_obs` rows,
+    /// and that variable IDs are unique.
+    /// Use [`try_new`](Self::try_new) for checked construction.
     pub fn new(lin_vars: Vec<LinVar<T>>, xib_obs: Col<T>, wb_obs: Mat<T>) -> Self {
         let vars = lin_vars.iter().map(|lin_var| lin_var.id).collect();
 
@@ -56,29 +61,45 @@ impl<T: RealField> GaussianFactor<T> {
         }
     }
 
-    /// Creates a factor, returning an error if dimensions are mismatched.
+    /// Creates a factor after verifying matrix dimensions and variable uniqueness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `xi_obs` does not have shape `(dim_obs,)`.
+    /// - `wb_obs` does not have shape `(dim_obs, dim_obs)`.
+    /// - Any transformation matrix in `lin_vars` does not have `dim_obs` rows.
+    /// - `lin_vars` contains duplicate variable IDs.
     pub fn try_new(lin_vars: Vec<LinVar<T>>, xib_obs: Col<T>, wb_obs: Mat<T>) -> Result<Self> {
-        let vars = lin_vars.iter().map(|lin_var| lin_var.id).collect();
-
         // Check observation dimension
-        if xib_obs.nrows() != wb_obs.nrows() || xib_obs.nrows() != wb_obs.ncols() {
-            bail!(
+        ensure!(
+            (xib_obs.nrows() == wb_obs.nrows()) && (xib_obs.nrows() == wb_obs.ncols()),
+            format!(
                 "Incompatible dimension found for xib_obs ({} rows) and wb_obs ({} rows and {} cols).",
                 xib_obs.nrows(),
                 wb_obs.nrows(),
                 wb_obs.ncols()
-            );
-        }
+            )
+        );
         let dim_obs = xib_obs.nrows();
+
+        let mut seen = std::collections::HashSet::with_capacity(lin_vars.len());
+        let mut vars = Vec::with_capacity(lin_vars.len());
         for lin_var in &lin_vars {
-            if lin_var.mat.nrows() != dim_obs {
-                bail!(
+            ensure!(
+                seen.insert(lin_var.id),
+                format!("Duplicate variable {} in Gaussian factor.", lin_var.id)
+            );
+            ensure!(
+                lin_var.mat.nrows() == dim_obs,
+                format!(
                     "Incompatible dimension found for variable {}. The current observation dimension is {} but the variable matrix has {} rows.",
                     lin_var.id,
                     dim_obs,
                     lin_var.mat.nrows()
-                );
-            }
+                )
+            );
+            vars.push(lin_var.id);
         }
 
         let factor = Self {
@@ -91,12 +112,13 @@ impl<T: RealField> GaussianFactor<T> {
         Ok(factor)
     }
 
-    /// Returns the [`LinVar`] with the given ID, if present.
-    pub fn get_lin_var(&self, id: usize) -> Option<&LinVar<T>> {
+    /// Returns a reference to the [`LinVar`] associated with `id`, or `None` if absent.
+    pub fn lin_var(&self, id: usize) -> Option<&LinVar<T>> {
         self.lin_vars.iter().find(|lin_var| lin_var.id == id)
     }
 
-    /// Returns `true` if the factor constrains variable `id`.
+    /// Returns `true` if this factor constrains the variable `id`.
+    /// See also [`lin_var`](Self::lin_var).
     pub fn contains(&self, id: usize) -> bool {
         self.vars.contains(&id)
     }

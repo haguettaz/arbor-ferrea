@@ -105,7 +105,7 @@ impl NumericTree for AdderTree {
         let mut sep_vals: Vec<i32> = Vec::new();
         for &sep in &node.separator {
             let (offset, dim) = ctx
-                .get_memory_layout(sep)
+                .memory_layout(sep)
                 .with_context(|| format!("Missing size for variable with id: {}", sep))?;
             unsafe {
                 // Guaranteed safe because parents always run before children
@@ -119,7 +119,7 @@ impl NumericTree for AdderTree {
 
         // 3. Write our computed values into our slot in the global buffer
         let my_offset = ctx
-            .get_offset(node.var)
+            .offset(node.var)
             .with_context(|| format!("Missing size for variable with id: {}", node.var))?;
         unsafe {
             // Guaranteed safe because topology guarantees no other thread writes to our slot

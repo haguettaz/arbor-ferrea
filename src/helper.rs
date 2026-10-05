@@ -12,12 +12,12 @@ pub fn build_buffer<T: Copy + Send + Sync>(
     context: &VarDict,
     default_value: T,
 ) -> Result<Vec<T>> {
-    let mut buffer = vec![default_value; context.get_total_size()];
+    let mut buffer = vec![default_value; context.total_size()];
 
     let mut seen = std::collections::HashSet::with_capacity(pin_factors.len());
     for factor in pin_factors {
         let (offset, size) = context
-            .get_memory_layout(factor.id)
+            .memory_layout(factor.id)
             .with_context(|| format!("Missing layout for anchor variable {}", factor.id))?;
         anyhow::ensure!(
             factor.value.len() == size,
