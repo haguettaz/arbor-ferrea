@@ -1,2 +1,3 @@
-// pub mod lie;
-pub mod utils;
+//! Variables-related modules.
+
+pub mod dictionary;
