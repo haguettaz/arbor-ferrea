@@ -117,6 +117,13 @@ impl<T: RealField> GaussianFactor<T> {
         {
             None => debug!("Variable {} not found in the Gaussian factor.", id),
             Some((i, lin_var)) => {
+                anyhow::ensure!(
+                    value.len() == lin_var.mat.ncols(),
+                    "Anchor value length ({}) does not match variable {} size ({})",
+                    value.len(),
+                    id,
+                    lin_var.mat.ncols()
+                );
                 let tmp_obs = &mut tmp[..self.dim_obs];
                 // Update xib_obs <- xib_obs - wb_obs * lin_var.mat lin_var.value
                 matmul(
