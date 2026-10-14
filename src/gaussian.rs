@@ -200,11 +200,24 @@ impl NumericClique for GaussianClique {
         for f in factors.into_iter().chain(in_msgs.iter()) {
             let nrows = f.dim_y();
             if let Some(mat) = f.a_view(&front_key) {
+                ensure!(
+                    mat.ncols() == dim_x,
+                    "Factor block for frontal variable {} has {} columns, expected {}",
+                    front_key,
+                    mat.ncols(),
+                    dim_x
+                );
                 a.rows_mut(irow, nrows).copy_from(&mat);
             }
             for &(key, (icol, ncols)) in &sep_ctx {
                 if let Some(mat) = f.a_view(&key) {
-                    // b.view_range_mut(f_start..f_start + f_size, cols.clone())
+                    ensure!(
+                        mat.ncols() == dim_x,
+                        "Factor block for separator variable {} has {} columns, expected {}",
+                        key,
+                        mat.ncols(),
+                        ncols
+                    );
                     b.view_mut((irow, icol), (nrows, ncols)).copy_from(&mat);
                 }
             }

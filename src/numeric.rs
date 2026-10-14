@@ -66,14 +66,12 @@ impl<T: Copy> ConcurrentStateBuffer<T> {
     /// # Errors
     ///
     /// Returns an error if the buffer is shorter than `required`.
-    pub fn ensure_len(&self, required: usize) -> Result<()> {
-        anyhow::ensure!(
-            self.len >= required,
-            "Values buffer length ({}) is smaller than the registered layout ({})",
-            self.len,
-            required
-        );
-        Ok(())
+    pub fn contains(&self, start: usize, end: usize) -> bool {
+        (start < end) && (end < self.len)
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
     }
 
     /// Copies `data` into the buffer, starting at `offset`.
@@ -354,8 +352,7 @@ pub trait NumericTree: Sized + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if a variable is missing from `ctx`, if the memory layouts overlap,
-    /// or if any clique fails to decide.
+    /// Returns an error if the memory layouts are invalid or if any clique fails to decide.
     fn solve_clique_seq<C: NumericContext>(
         clique: &mut Self::Clique,
         buffer: &ConcurrentStateBuffer<<Self::Clique as NumericClique>::Scalar>,
@@ -368,6 +365,15 @@ pub trait NumericTree: Sized + Send + Sync {
             .with_context(|| "Memory layout for frontal variable not found")?;
         let f_end = f_start + f_size;
 
+        // Enforce valid memory layouts
+        anyhow::ensure!(
+            buffer.contains(f_start, f_end),
+            "Invalid memory layout for the provided buffer, expected range between 0 and {}, got {} and {}",
+            buffer.len(),
+            f_start,
+            f_end
+        );
+
         // Resolve immutable separator slices
         let sep_keys = clique.sep_keys();
         let mut sep_in = Vec::with_capacity(sep_keys.len());
@@ -377,6 +383,15 @@ pub trait NumericTree: Sized + Send + Sync {
                 .memory_layout(key)
                 .with_context(|| "Memory layout for separator variable not found")?;
             let s_end = s_start + s_size;
+
+            // Enforce valid memory layouts
+            anyhow::ensure!(
+                buffer.contains(s_start, s_end),
+                "Invalid memory layout for the provided buffer, expected range between 0 and {}, got {} and {}",
+                buffer.len(),
+                s_start,
+                s_end
+            );
 
             // Enforce disjoint memory layouts to guarantee safety
             anyhow::ensure!(
@@ -427,8 +442,7 @@ pub trait NumericTree: Sized + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if a variable is missing from `ctx`, if the memory layouts overlap,
-    /// or if any clique fails to decide.
+    /// Returns an error if the memory layouts are invalid or if any clique fails to decide.
     fn solve_clique_par<C: NumericContext>(
         clique: &mut Self::Clique,
         buffer: &ConcurrentStateBuffer<<Self::Clique as NumericClique>::Scalar>,
@@ -441,6 +455,15 @@ pub trait NumericTree: Sized + Send + Sync {
             .with_context(|| "Memory layout for frontal variable not found")?;
         let f_end = f_start + f_size;
 
+        // Enforce valid memory layouts
+        anyhow::ensure!(
+            buffer.contains(f_start, f_end),
+            "Invalid memory layout for the provided buffer, expected range between 0 and {}, got {} and {}",
+            buffer.len(),
+            f_start,
+            f_end
+        );
+
         // Resolve immutable separator slices
         let sep_keys = clique.sep_keys();
         let mut sep_in = Vec::with_capacity(sep_keys.len());
@@ -451,6 +474,15 @@ pub trait NumericTree: Sized + Send + Sync {
                 .with_context(|| "Memory layout for separator variable not found")?;
             let s_end = s_start + s_size;
 
+            // Enforce valid memory layouts
+            anyhow::ensure!(
+                buffer.contains(s_start, s_end),
+                "Invalid memory layout for the provided buffer, expected range between 0 and {}, got {} and {}",
+                buffer.len(),
+                s_start,
+                s_end
+            );
+
             // Enforce disjoint memory layouts to guarantee safety
             anyhow::ensure!(
                 f_end <= s_start || s_end <= f_start,
@@ -460,6 +492,7 @@ pub trait NumericTree: Sized + Send + Sync {
             );
 
             // SAFETY: The check above guarantees this region does not overlap with the frontal region.
+            // The tree execution schedule mathematically guarantees no other threads are writing to this region.
             sep_in.push(unsafe { buffer.read_slice(s_start, s_size) });
         }
 
@@ -472,7 +505,7 @@ pub trait NumericTree: Sized + Send + Sync {
         // Recurse to children
         clique
             .children_mut()
-            .par_iter_mut()
+            .iter_mut()
             .try_for_each(|child| Self::solve_clique_par(child, buffer, ctx))
     }
 }
