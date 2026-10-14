@@ -7,24 +7,27 @@ use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
-use crate::factor::symbolic::SymbolicFactor;
+/// A factor defined purely by the variables it connects.
+pub trait SymbolicFactor {
+    fn keys(&self) -> &[usize];
+}
 
-/// A node in a symbolic elimination tree representing an elimination clique.
-pub struct SymbolicNode {
+/// A clique in a symbolic elimination tree representing an elimination clique.
+pub struct SymbolicClique {
     /// Variable eliminated at this node.
-    pub main: usize,
+    pub front_key: usize,
     /// Separator variables conditioning this node during elimination.
-    pub separator: Vec<usize>,
+    pub sep_keys: Vec<usize>,
     /// Indices of original factors assigned to this node.
     pub factors: Vec<usize>,
     /// Child nodes in the elimination tree.
-    pub children: Vec<SymbolicNode>,
+    pub children: Vec<SymbolicClique>,
 }
 
 /// An elimination tree forest capturing the factorization topology.
 pub struct SymbolicTree {
     /// Root nodes of independent elimination trees in the forest.
-    pub roots: Vec<SymbolicNode>,
+    pub roots: Vec<SymbolicClique>,
 }
 
 impl SymbolicTree {
@@ -32,8 +35,8 @@ impl SymbolicTree {
     ///
     /// # Errors
     ///
-    /// Returns an error if `order` contains duplicates or misses variables present in `factors`.
-    /// Variables in `order` that appear in no factors are pruned automatically.
+    /// Returns an error if `order` contains duplicates or misses keys present in `factors`.
+    /// Keys in `order` that appear in no factors are pruned automatically.
     pub fn build<'a>(
         factors: impl IntoIterator<Item = &'a dyn SymbolicFactor>,
         order: &[usize],
@@ -49,15 +52,15 @@ impl SymbolicTree {
         // Validate that all variables in the factors are accounted for in the order
         let seen_in_factors: HashSet<usize> = factors_vec
             .iter()
-            .flat_map(|f| f.vars().iter())
+            .flat_map(|f| f.keys().iter())
             .cloned()
             .collect();
 
-        for var in &seen_in_factors {
-            if !seen_in_order.contains(var) {
+        for key in &seen_in_factors {
+            if !seen_in_order.contains(key) {
                 bail!(
-                    "Variable {} is present in factors but missing from elimination order",
-                    var
+                    "Variable with key {} is present in factors but missing from elimination order",
+                    key
                 );
             }
         }
@@ -75,7 +78,7 @@ impl SymbolicTree {
         // 2. Assign each original factor to the variable in it that is eliminated FIRST
         let mut factors_map: HashMap<usize, Vec<usize>> = HashMap::with_capacity(order.len());
         for (factor_id, factor) in factors_vec.iter().enumerate() {
-            if let Some(&min_var) = factor.vars().iter().min_by_key(|v| ranks.get(v).unwrap()) {
+            if let Some(&min_var) = factor.keys().iter().min_by_key(|v| ranks.get(v).unwrap()) {
                 factors_map.entry(min_var).or_default().push(factor_id);
             }
         }
@@ -96,7 +99,7 @@ impl SymbolicTree {
             // Find and extract all active messages that involve the current variable
             let (var_messages, rem_messages): (Vec<_>, Vec<_>) = active_messages
                 .into_iter()
-                .partition(|(_, vars)| vars.contains(&var));
+                .partition(|(_, keys)| keys.contains(&var));
 
             active_messages = rem_messages;
 
@@ -104,7 +107,7 @@ impl SymbolicTree {
             let mut sep_set = HashSet::new();
 
             for &fid in &var_factors {
-                sep_set.extend(factors_vec[fid].vars());
+                sep_set.extend(factors_vec[fid].keys());
             }
             for (_, var_msg) in &var_messages {
                 sep_set.extend(var_msg);
@@ -139,24 +142,24 @@ impl SymbolicTree {
         Ok(Self { roots: root_nodes })
     }
 
-    /// Recursively instantiates a [`SymbolicNode`] and its subtree from topology maps.
+    /// Recursively instantiates a [`SymbolicClique`] and its subtree from topology maps.
     fn build_node(
-        main: usize,
+        front_key: usize,
         children_map: &HashMap<usize, Vec<usize>>,
         separator_map: &HashMap<usize, Vec<usize>>,
         factors_map: &HashMap<usize, Vec<usize>>,
-    ) -> SymbolicNode {
+    ) -> SymbolicClique {
         let children = children_map
-            .get(&main)
+            .get(&front_key)
             .unwrap_or(&vec![])
             .iter()
             .map(|&child_var| Self::build_node(child_var, children_map, separator_map, factors_map))
             .collect();
 
-        SymbolicNode {
-            main,
-            separator: separator_map.get(&main).cloned().unwrap_or_default(),
-            factors: factors_map.get(&main).cloned().unwrap_or_default(),
+        SymbolicClique {
+            front_key,
+            sep_keys: separator_map.get(&front_key).cloned().unwrap_or_default(),
+            factors: factors_map.get(&front_key).cloned().unwrap_or_default(),
             children,
         }
     }
@@ -173,7 +176,7 @@ impl Display for SymbolicTree {
             writeln!(
                 f,
                 "Root [Var: {}, Factors: {:?}, Separator: {:?}]",
-                root.main, root.factors, root.separator
+                root.front_key, root.factors, root.sep_keys
             )?;
 
             // Print all children recursively
@@ -191,15 +194,15 @@ impl Display for SymbolicTree {
     }
 }
 
-impl SymbolicNode {
+impl SymbolicClique {
     /// Recursively formats the node hierarchy as an ASCII tree.
     fn fmt_recursive(&self, f: &mut Formatter<'_>, prefix: &str, is_last: bool) -> FmtResult {
         let branch_marker = if is_last { "└── " } else { "├── " };
 
         writeln!(
             f,
-            "{}{}[Main: {}, Factors: {:?}]",
-            prefix, branch_marker, self.main, self.factors
+            "{}{}[Frontal: {}, Separator: {:?}]",
+            prefix, branch_marker, self.front_key, self.sep_keys
         )?;
 
         let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
@@ -218,23 +221,23 @@ mod tests {
     use super::*;
 
     struct SimpleSymbolicFactor {
-        vars: Vec<usize>,
+        keys: Vec<usize>,
     }
 
     impl SymbolicFactor for SimpleSymbolicFactor {
-        fn vars(&self) -> &[usize] {
-            &self.vars
+        fn keys(&self) -> &[usize] {
+            &self.keys
         }
     }
 
     #[test]
     fn test_build_tree() {
-        let f0 = SimpleSymbolicFactor { vars: vec![0] };
-        let f1 = SimpleSymbolicFactor { vars: vec![0, 1] };
-        let f2 = SimpleSymbolicFactor { vars: vec![1, 2] };
-        let f3 = SimpleSymbolicFactor { vars: vec![0, 3] };
-        let f4 = SimpleSymbolicFactor { vars: vec![1, 3] };
-        let f5 = SimpleSymbolicFactor { vars: vec![2, 4] };
+        let f0 = SimpleSymbolicFactor { keys: vec![0] };
+        let f1 = SimpleSymbolicFactor { keys: vec![0, 1] };
+        let f2 = SimpleSymbolicFactor { keys: vec![1, 2] };
+        let f3 = SimpleSymbolicFactor { keys: vec![0, 3] };
+        let f4 = SimpleSymbolicFactor { keys: vec![1, 3] };
+        let f5 = SimpleSymbolicFactor { keys: vec![2, 4] };
 
         let symbolic_factors: [&dyn SymbolicFactor; 6] = [&f0, &f1, &f2, &f3, &f4, &f5];
 
@@ -243,6 +246,6 @@ mod tests {
 
         let tree = tree_result.unwrap();
         assert_eq!(tree.roots.len(), 1);
-        assert_eq!(tree.roots[0].main, 2);
+        assert_eq!(tree.roots[0].front_key, 2);
     }
 }
