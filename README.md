@@ -1,12 +1,10 @@
 # 🦀 arbor-ferrea
 
-A high-performance Rust solver for sparse least-square, built around tree-structured Gaussian factor graphs.
+A Rust solver for sparse linear least-squares problems, built around tree-structured Gaussian factor graphs.
 
-Engineered from the ground up for safety and speed, it leverages Rust’s type system alongside high-performance linear algebra routines. 
+The crate implements elimination on junction trees, using [`nalgebra`](https://docs.rs/nalgebra/latest/nalgebra/index.html) for dense frontal factorizations with support for both sequential and parallel ([`rayon`](https://docs.rs/rayon/latest/rayon/)) execution. It is intended primarily for research and experimental online estimation workflows.
 
-*Note: If you are looking for a more mature, general-purpose factor graph solver in the Rust ecosystem, check out [fact.rs](https://docs.rs/factrs/latest/factrs/index.html).*
-
----
+***Note:** This project is under active development and the API is evolving. For a mature, general-purpose factor-graph optimization library in Rust, check out [`fact.rs`](https://docs.rs/factrs/latest/factrs/index.html).*
 
 ## 🗺️ Roadmap & Features
 
@@ -32,8 +30,6 @@ Engineered from the ground up for safety and speed, it leverages Rust’s type s
 ### Helper Functions
 - [x] Variable dictionary
 - [ ] Factor dictionary
-
----
 
 ## 📚 References
 
