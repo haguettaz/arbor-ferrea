@@ -1,11 +1,15 @@
-//! A high-performance Rust library for statistical estimation in robotics, built around
-//! tree-structured Gaussian factor graphs.
+//! A solver for sparse least squares problems using tree-structured
+//! Gaussian factor graphs.
 //!
-//! Engineered from the ground up for safety and speed, it leverages Rust’s type system
-//! alongside high-performance linear algebra routines powered by [faer](https://faer.veganb.tw).
-//! The architecture draws heavy inspiration from [gtsam](https://gtsam.org).
+//! This crate provides safe, concurrent tree orchestration and fast linear algebra
+//! to execute exact inference via sequential or parallel variable elimination. Typical
+//! applications include:
+//!
+//! * **Robotics:** State estimation, trajectory optimization, and SLAM (Simultaneous Localization and Mapping).
+//! * **Computer Vision:** Bundle adjustment and 3D camera reconstruction.
+//! * **Geodesy & Engineering:** Geodetic network adjustment and structural analysis.
 
-pub mod factor;
+pub mod gaussian;
 pub mod helper;
-pub mod tree;
-pub mod variable;
+pub mod numeric;
+pub mod symbolic;

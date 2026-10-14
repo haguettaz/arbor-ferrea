@@ -52,3 +52,6 @@ Cargo.lock
 rust-project.json
 
 .harper-dictionary.txt
+
+notes.txt
+notes.rs
