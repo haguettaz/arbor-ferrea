@@ -21,33 +21,43 @@ cargo add arbor-ferrea
 
 ```rust
 use anyhow::Result;
-use arbor_ferrea::prelude::*;
+use arbor_ferrea::ui::*;
 
 fn main() -> Result<()> {
-    // Build the dictionary and register domain variables
-    let mut var_dict = VarDict::new();
-    let x1 = var_dict.register(VarSymbol('x', 1), 3);
-    let x2 = var_dict.register(VarSymbol('x', 2), 3);
-    let x3 = var_dict.register(VarSymbol('x', 3), 3);
-    let l1 = var_dict.register(VarSymbol('l', 1), 2);
-    let l2 = var_dict.register(VarSymbol('l', 2), 2);
-
-    // Setup the global state buffer
-    let mut buffer = vec![f64::NAN; dict.total_size()];
-
-    // Setup the factors between the variables
-    let factors: Vec<GaussianFactor> = ...;
+    // initialize an empty factor graph
+    let mut factor_graph = GaussianFactorGraph::new();
     
-    // Build the symbolic tree
-    let order = [l1, l2, x1, x2, x3]; // user-defined elimination order
-    let symb_tree = SymbolicTree::build(factors.iter().map(|f| f as &dyn SymbolicFactor), &order)?;
-
-    // Sequential build pass (for parallel execution, use _par instead)
-    let gauss_tree = GaussianTree::from_symbolic_seq(&symb_tree, &factors, &var_dict)?;
-
-    // Sequential solve pass (for parallel execution, use _par instead)
-    gauss_tree.solve_seq(&mut buffer, &dict)?;
-
+    // register variables: (symbol, dimension)
+    let x1 = factor_graph.add_variable(VarSymbol('x', 1), 1)?;
+    let x2 = factor_graph.add_variable(VarSymbol('x', 2), 1)?;
+    
+    // prior factor on x1: x1 ~ N(0.0, 1.0)
+    factor_graph.add_factor(
+        vec![x1],
+        vec![dmatrix![1.0]],       // Measurement matrix A
+        dvector![0.0],             // Mean / measurement
+        dmatrix![1.0],             // Information / weight matrix W
+    )?;
+    
+    // odometry factor between x1 and x2: x2 - x1 ~ N(2.0, 1.0)
+    factor_graph.add_factor(
+        vec![x1, x2],
+        vec![dmatrix![-1.0], dmatrix![1.0]], // [-I, I]
+        dvector![2.0],
+        dmatrix![1.0],
+    )?;
+    
+    // build symbolic computation tree along elimination order
+    let order = [x1, x2];
+    let symb_tree = factor_graph.build_symbolic_tree(&order)?;
+    
+    // sequential solve
+    let solution = factor_graph.solve_seq(&symb_tree)?;
+    // or in parallel: factor_graph.solve_par(&symb_tree)?;
+    
+    println!("x1: {:?}", factor_graph.value(x1).unwrap());
+    println!("x2: {:?}", factor_graph.value(x2).unwrap());
+    
     Ok(())
 }
 ```
@@ -74,9 +84,8 @@ fn main() -> Result<()> {
 ### Robust Estimation & Factors
 - [ ] NUP integration, e.g., Huber kernel
 
-### Helper Functions
-- [x] Variable dictionary
-- [ ] Factor dictionary
+### User Interface
+- [x] Safe Gaussian factor graph construction
 
 ## 📚 References
 

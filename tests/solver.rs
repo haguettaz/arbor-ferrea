@@ -38,23 +38,6 @@ fn run_solver_empty() {
     assert!(res.is_ok());
     let out = res.unwrap();
     assert!(out.iter().all(|v| v.is_finite()));
-
-    // let mut gauss_tree = res.unwrap();
-    // assert!(gauss_tree.roots.is_empty());
-    // // Solve pass
-    // let res = gauss_tree.solve_seq(&mut buffer, &dict);
-    // assert!(res.is_ok());
-
-    // PARALLEL
-    // Build pass
-    // let res = GaussianTree::from_symbolic_par(&symb_tree, &factors, &dict);
-    // assert!(res.is_ok());
-    // let mut gauss_tree = res.unwrap();
-    // assert!(gauss_tree.roots.is_empty());
-    // // Solve pass
-    // let res = gauss_tree.solve_par(&mut buffer, &dict);
-    // assert!(res.is_ok());
-    // assert!(buffer.iter().all(|v| v.is_nan()));
 }
 
 #[test]
@@ -356,6 +339,8 @@ fn run_solver_anchored() {
     let out = res.unwrap();
     assert!(out.iter().all(|v| v.is_finite()));
     assert!(zip(out.iter(), sol.iter()).all(|(b, s)| (b - s).abs() < 1e-9));
+    let x1_value = factor_graph.value(x1).unwrap_or_default();
+    assert!(x1_value.iter().all(|&v| v.abs() < 1e-9));
 
     // parallel execution
     let res = factor_graph.solve_par(&tree);
@@ -363,6 +348,8 @@ fn run_solver_anchored() {
     let out = res.unwrap();
     assert!(out.iter().all(|v| v.is_finite()));
     assert!(zip(out.iter(), sol.iter()).all(|(b, s)| (b - s).abs() < 1e-9));
+    let x1_value = factor_graph.value(x1).unwrap_or_default();
+    assert!(x1_value.iter().all(|&v| v.abs() < 1e-9));
 }
 
 #[test]
