@@ -10,12 +10,9 @@
 
 use anyhow::{Context, Result, ensure};
 use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView, DVectorViewMut};
-use std::iter::zip;
+use std::{collections::HashSet, iter::zip};
 
-use crate::{
-    numeric::{NumericClique, NumericContext, NumericTree},
-    symbolic::SymbolicFactor,
-};
+use crate::numeric::{NumericClique, NumericContext, NumericTree};
 
 /// Diagonal regularizer added before computing the Cholesky decomposition in
 /// [`GaussianClique::build_and_close`].
@@ -84,7 +81,7 @@ pub struct GaussianClique {
     /// Matrix `B` of shape `(dim_y, dim_s)`, coupling the separator variables to the observations.
     b: DMatrix<f64>,
     /// Context of the separator variable as tuples `(key, col range)` aligned with `B`.
-    sep_ctx: Vec<(usize, (usize, usize))>,
+    sep_layout: Vec<(usize, usize, usize)>,
 
     /// Observation weighted mean vector of shape (dim_y,)
     _xiby: DVector<f64>,
@@ -166,17 +163,19 @@ impl NumericClique for GaussianClique {
     /// or if the internal Cholesky decomposition fails (e.g., due to an ill-conditioned matrix).
     fn build_and_close<C: NumericContext>(
         front_key: usize,
-        sep_keys: Vec<usize>,
+        sep_keys: HashSet<usize>,
         factors: Vec<&GaussianFactor>,
         in_msgs: Vec<GaussianFactor>,
         children: Vec<GaussianClique>,
         ctx: &C,
     ) -> Result<(GaussianClique, GaussianFactor)> {
+        // Observation domain
         let dim_y = factors.iter().map(|f| f.dim_y()).sum::<usize>()
             + in_msgs.iter().map(|f| f.dim_y()).sum::<usize>();
         let mut xiby = DVector::zeros(dim_y);
         let mut wby = DMatrix::zeros(dim_y, dim_y);
 
+        // Frontal variable domain
         let (_, dim_x) = ctx.memory_layout(front_key).with_context(|| {
             format!(
                 "The dimension of the frontal variable {} cannot be found in the variable context",
@@ -185,11 +184,13 @@ impl NumericClique for GaussianClique {
         })?;
         let mut a = DMatrix::zeros(dim_y, dim_x);
 
-        let mut sep_ctx = Vec::<(usize, (usize, usize))>::with_capacity(sep_keys.len());
+        // Separator variables domain
+        let sep_keys: Vec<usize> = sep_keys.into_iter().collect();
+        let mut sep_layout = Vec::<(usize, usize, usize)>::with_capacity(sep_keys.len());
         let mut icol = 0;
         for &key in &sep_keys {
             let (_, ncols) = ctx.memory_layout(key).with_context(|| format!("The dimension of the separator variable {} cannot be found in the variable context", key))?;
-            sep_ctx.push((key, (icol, ncols)));
+            sep_layout.push((key, icol, ncols));
             icol += ncols;
         }
         let dim_s = icol;
@@ -199,7 +200,7 @@ impl NumericClique for GaussianClique {
         let mut irow = 0;
         for f in factors.into_iter().chain(in_msgs.iter()) {
             let nrows = f.dim_y();
-            if let Some(mat) = f.a_view(&front_key) {
+            if let Some(mat) = f.a_view(front_key) {
                 ensure!(
                     mat.ncols() == dim_x,
                     "Factor block for frontal variable {} has {} columns, expected {}",
@@ -209,8 +210,8 @@ impl NumericClique for GaussianClique {
                 );
                 a.rows_mut(irow, nrows).copy_from(&mat);
             }
-            for &(key, (icol, ncols)) in &sep_ctx {
-                if let Some(mat) = f.a_view(&key) {
+            for &(key, icol, ncols) in &sep_layout {
+                if let Some(mat) = f.a_view(key) {
                     ensure!(
                         mat.ncols() == ncols,
                         "Factor block for separator variable {} has {} columns, expected {}",
@@ -258,13 +259,18 @@ impl NumericClique for GaussianClique {
         let s = DVector::from_element(dim_s, f64::NAN);
         let b_s = DVector::from_element(dim_y, f64::NAN);
 
-        let out_msg =
-            GaussianFactor::new_unchecked(sep_keys.clone(), sep_ctx.clone(), b.clone(), xibz, wbz);
+        let out_msg = GaussianFactor::new_unchecked(
+            sep_keys.clone(),
+            sep_layout.clone(),
+            b.clone(),
+            xibz,
+            wbz,
+        );
         let clique = GaussianClique {
             children,
             front_key,
             sep_keys,
-            sep_ctx,
+            sep_layout,
             _a: a,
             b,
             _xiby: xiby,
@@ -282,7 +288,7 @@ impl NumericClique for GaussianClique {
     /// `sep_vals` of the separator variables, aligned with `sep_keys`.
     fn decide(&mut self, out: &mut [Self::Scalar], sep_vals: &[&[Self::Scalar]]) -> Result<()> {
         // Load the separator values into self.s
-        for (&(_, (irow, nrows)), sep_val) in zip(self.sep_ctx.iter(), sep_vals.iter()) {
+        for (&(_, irow, nrows), sep_val) in zip(self.sep_layout.iter(), sep_vals.iter()) {
             let mut s = self.s.rows_mut(irow, nrows);
             s.copy_from_slice(sep_val);
         }
@@ -302,8 +308,8 @@ impl NumericClique for GaussianClique {
 pub struct GaussianFactor {
     /// Variable keys.
     keys: Vec<usize>,
-    /// Context of the variables, i.e., tuples of keys and column range (icol, ncols) in `A`.
-    ctx: Vec<(usize, (usize, usize))>,
+    /// Layout of the variables in A, i.e., tuples (key, icol, ncols).
+    layout: Vec<(usize, usize, usize)>,
     /// Observation model matrices of shape `(dim_y, dim_x)`
     a: DMatrix<f64>,
     /// Observation weighted mean of shape `(dim_y,)`.
@@ -318,27 +324,31 @@ impl GaussianFactor {
     /// The caller must ensure that `keys` and `ctx` contains the same keys,
     /// that `a` has shape `(dim_y, dim_x)` where `dim_x` is the total size of the keys,
     /// and that `xiby` and `wby` have shapes  `(dim_y,)` and `(dim_y, dim_y)`.
-    pub(crate) fn new_unchecked(
+    pub fn new_unchecked(
         keys: Vec<usize>,
-        ctx: Vec<(usize, (usize, usize))>,
+        layout: Vec<(usize, usize, usize)>,
         a: DMatrix<f64>,
         xiby: DVector<f64>,
         wby: DMatrix<f64>,
     ) -> Self {
         // Check that every key in ctx is in keys.
-        debug_assert!(!ctx.iter().any(|(ck, _)| !keys.contains(ck)),);
+        debug_assert!(!layout.iter().any(|(ck, _, _)| !keys.contains(ck)),);
         // Check that every key in keys is in ctx.
-        debug_assert!(!keys.iter().any(|k| !ctx.iter().any(|(ck, _)| ck == k)),);
+        debug_assert!(
+            !keys
+                .iter()
+                .any(|k| !layout.iter().any(|(ck, _, _)| ck == k)),
+        );
 
         // Check dimensions
-        debug_assert!(a.ncols() == ctx.iter().map(|(_, (_, ncols))| ncols).sum());
+        debug_assert!(a.ncols() == layout.iter().map(|(_, _, ncols)| ncols).sum());
         debug_assert!(a.nrows() == xiby.nrows());
         debug_assert!(a.nrows() == wby.nrows());
         debug_assert!(a.nrows() == wby.ncols());
 
         Self {
             keys,
-            ctx,
+            layout,
             a,
             xiby,
             wby,
@@ -366,36 +376,35 @@ impl GaussianFactor {
 
         let keys = ctx.iter().map(|&(key, _)| key).collect();
 
-        let mut new_ctx = Vec::with_capacity(ctx.len());
+        let mut layout = Vec::with_capacity(ctx.len());
         let mut icol = 0;
         for &(key, size) in &ctx {
-            new_ctx.push((key, (icol, size)));
+            layout.push((key, icol, size));
             icol += size;
         }
 
         Ok(Self {
             keys,
-            ctx: new_ctx,
+            layout,
             a,
             xiby,
             wby,
         })
     }
 
-    /// Returns the keys of the variables.
-    pub fn keys(&self) -> &[(usize, (usize, usize))] {
-        &self.ctx
+    pub fn keys(&self) -> &[usize] {
+        &self.keys
     }
 
-    /// Returns `true` if the factor involves the variable `key`.
-    fn key(&self, key: &usize) -> Option<&(usize, (usize, usize))> {
-        self.ctx.iter().find(|(k, _)| k == key)
+    /// Returns the layout of the variable.
+    fn layout(&self, key: usize) -> Option<(usize, usize, usize)> {
+        self.layout.iter().find(|(k, _, _)| *k == key).cloned()
     }
 
     /// Returns a view on the block column of the variable `key`, or `None` if absent.
-    pub fn a_view(&self, key: &usize) -> Option<DMatrixView<'_, f64>> {
-        self.key(key)
-            .map(|&(_, (icol, ncols))| self.a.columns(icol, ncols))
+    pub fn a_view(&self, key: usize) -> Option<DMatrixView<'_, f64>> {
+        self.layout(key)
+            .map(|(_, icol, ncols)| self.a.columns(icol, ncols))
     }
 
     /// Returns a view on the observation weighted mean vector.
@@ -411,12 +420,6 @@ impl GaussianFactor {
     /// Returns the observation dimension.
     pub fn dim_y(&self) -> usize {
         self.xiby.nrows()
-    }
-}
-
-impl SymbolicFactor for GaussianFactor {
-    fn keys(&self) -> &[usize] {
-        &self.keys
     }
 }
 

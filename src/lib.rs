@@ -10,6 +10,6 @@
 //! * **Geodesy & Engineering:** Geodetic network adjustment and structural analysis.
 
 pub mod gaussian;
-pub mod helper;
 pub mod numeric;
 pub mod symbolic;
+pub mod ui;

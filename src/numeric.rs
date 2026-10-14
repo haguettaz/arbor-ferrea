@@ -18,10 +18,10 @@
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-
-use crate::symbolic::SymbolicFactor;
+use std::collections::HashSet;
 
 use super::symbolic::{SymbolicClique, SymbolicTree};
+// use crate::symbolic::SymbolicFactor;
 
 use std::ptr;
 
@@ -517,7 +517,7 @@ pub trait NumericTree: Sized + Send + Sync {
 /// A clique eliminating one frontal variable given its separator variables.
 pub trait NumericClique: Sized + Send + Sync {
     /// Factor type assigned to cliques by the symbolic tree.
-    type Factor: Sync + SymbolicFactor;
+    type Factor: Sync;
 
     /// Message type sent by a clique to its parent, over the separator variables.
     type Message: Send + Sync;
@@ -554,7 +554,7 @@ pub trait NumericClique: Sized + Send + Sync {
     /// Returns an error if the elimination fails, e.g., if a variable is missing from `ctx`.
     fn build_and_close<C: NumericContext>(
         front_key: usize,
-        sep_keys: Vec<usize>,
+        sep_keys: HashSet<usize>,
         assigned_factors: Vec<&Self::Factor>,
         incoming_messages: Vec<Self::Message>,
         children: Vec<Self>,
