@@ -212,7 +212,7 @@ impl NumericClique for GaussianClique {
             for &(key, (icol, ncols)) in &sep_ctx {
                 if let Some(mat) = f.a_view(&key) {
                     ensure!(
-                        mat.ncols() == dim_x,
+                        mat.ncols() == ncols,
                         "Factor block for separator variable {} has {} columns, expected {}",
                         key,
                         mat.ncols(),

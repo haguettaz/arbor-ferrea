@@ -67,7 +67,7 @@ impl<T: Copy> ConcurrentStateBuffer<T> {
     ///
     /// Returns an error if the buffer is shorter than `required`.
     pub fn contains(&self, start: usize, end: usize) -> bool {
-        (start < end) && (end < self.len)
+        (start <= end) && (end <= self.len)
     }
 
     pub fn len(&self) -> usize {
