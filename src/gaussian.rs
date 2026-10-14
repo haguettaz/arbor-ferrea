@@ -234,8 +234,8 @@ impl NumericClique for GaussianClique {
         let mut at_wby = DMatrix::zeros(dim_x, dim_y);
         a.tr_mul_to(&wby, &mut at_wby);
 
-        // let mut wtx = DMatrix::zeros(dim_x, dim_x);
-        let mut wtx = DMatrix::from_diagonal_element(dim_x, dim_x, CHOL_REG); // ensure wtx is positive definite
+        // let mut wtx = DMatrix::from_diagonal_element(dim_x, dim_x, CHOL_REG); // ensure wtx is positive definite
+        let mut wtx = DMatrix::zeros(dim_x, dim_x);
         wtx.gemm(1.0, &at_wby, &a, 1.0); // wtx = a.t wby a
         let rtx = wtx.cholesky().with_context(|| {
             format!(

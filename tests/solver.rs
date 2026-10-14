@@ -41,7 +41,7 @@ fn run_solver_empty() {
 }
 
 #[test]
-/// Context: incomplete system with no global anchor
+/// Context: singular system with no global positioning
 fn run_solver_singular() {
     let mut factor_graph = GaussianFactorGraph::new();
 
@@ -166,15 +166,11 @@ fn run_solver_singular() {
 
     // sequential execution
     let res = factor_graph.solve_seq(&tree);
-    assert!(res.is_ok());
-    let out = res.unwrap();
-    assert!(out.iter().all(|v| v.is_finite()));
+    assert!(res.is_err());
 
     // parallel execution
     let res = factor_graph.solve_par(&tree);
-    assert!(res.is_ok());
-    let out = res.unwrap();
-    assert!(out.iter().all(|v| v.is_finite()));
+    assert!(res.is_err());
 }
 //
 #[test]

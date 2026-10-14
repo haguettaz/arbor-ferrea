@@ -173,6 +173,10 @@ impl GaussianFactorGraph {
         Ok(self.factors.len() - 1)
     }
 
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
     /// Returns the optimal value for the given variable
     pub fn value(&self, key: usize) -> Option<&[f64]> {
         self.var_dict
