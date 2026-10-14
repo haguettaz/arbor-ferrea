@@ -50,6 +50,7 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+```
 
 
 ## 🗺️ Roadmap & Features
