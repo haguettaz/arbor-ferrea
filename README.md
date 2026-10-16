@@ -1,7 +1,5 @@
 # 🦀 arbor-ferrea
 
-# 🦀 arbor-ferrea
-
 A Rust solver for sparse linear least-squares problems, built around tree-structured Gaussian factor graphs.
 
 The crate resolves cyclic graphs by sequentially eliminating variables (max-product message passing) to form a rooted computation tree. 
