@@ -13,13 +13,13 @@ use crate::symbolic::SymbolicTree;
 
 /// Variable symbol
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct VarSymbol(pub char, pub usize);
+pub struct Symbol(pub char, pub usize);
 
 /// Variable register
 #[derive(Default, Debug, Clone)]
 pub struct VarDict {
-    sym_to_key: HashMap<VarSymbol, usize>,
-    key_to_sym: Vec<VarSymbol>,
+    sym_to_key: HashMap<Symbol, usize>,
+    key_to_sym: Vec<Symbol>,
     key_to_size: Vec<usize>,
     key_to_offset: Vec<usize>,
     total_dimension: usize,
@@ -32,7 +32,7 @@ impl VarDict {
     }
 
     /// Registers a variable and its dimension, returning its dense identifier.
-    pub fn register(&mut self, sym: VarSymbol, size: usize) -> Result<usize> {
+    pub fn register(&mut self, sym: Symbol, size: usize) -> Result<usize> {
         if let Some(_) = self.sym_to_key.get(&sym) {
             bail!("Variable {:?} has already been registered.", sym)
         }
@@ -47,12 +47,12 @@ impl VarDict {
     }
 
     /// Returns the dense key corresponding to `sym`, if registered.
-    pub fn key(&self, sym: VarSymbol) -> Option<usize> {
+    pub fn key(&self, sym: Symbol) -> Option<usize> {
         self.sym_to_key.get(&sym).copied()
     }
 
     /// Returns the symbol corresponding to dense index `key`, if valid.
-    pub fn symbol(&self, key: usize) -> Option<VarSymbol> {
+    pub fn symbol(&self, key: usize) -> Option<Symbol> {
         self.key_to_sym.get(key).copied()
     }
 
@@ -116,7 +116,7 @@ impl GaussianFactorGraph {
         self.factors.get(key)
     }
 
-    pub fn add_variable(&mut self, sym: VarSymbol, size: usize) -> Result<usize> {
+    pub fn add_variable(&mut self, sym: Symbol, size: usize) -> Result<usize> {
         let key = self.var_dict.register(sym, size)?;
         self.values.extend(vec![f64::NAN; size]);
         Ok(key)

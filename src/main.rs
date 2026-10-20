@@ -1,138 +1,133 @@
-use anyhow::Result;
-use nalgebra::{dmatrix, dvector};
+// use anyhow::Result;
+//
+// use std::collections::{HashMap, HashSet};
+//
+// use arbor_ferrea::gaussian::GaussianFactor;
+//
+// pub struct GaussianMessage {
+//     /// The keys of the variables it depends on
+//     keys: Vec<usize>,
+//     /// The keys of the factors it summarizes
+//     factor_ids: Vec<usize>,
+// }
+//
+// pub struct ComputationNode {
+//     key: usize, // The key of the target variable
+//     msgf: Option<Box<GaussianMessage>>,
+//     msgb: Option<Box<GaussianMessage>>,
+// }
+//
+// impl ComputationNode {
+//     pub fn new(key: usize) -> Self {
+//         ComputationNode {
+//             key,
+//             msgf: None,
+//             msgb: None,
+//         }
+//     }
+//
+//     pub fn step<'a>(
+//         &self,
+//         factors: &[&'a GaussianFactor],
+//         m_keys: &HashSet<usize>,
+//     ) -> Result<(Box<GaussianMessage>, Vec<&'a GaussianFactor>)> {
+//         // Only allocate a vector for the remaining factors
+//         let rem_factors: Vec<_> = factors
+//             .iter()
+//             .copied()
+//             .filter(|f| f.keys().iter().any(|k| !m_keys.contains(k)))
+//             .collect();
+//
+//         // Pass a lazy iterator directly to combine
+//         let active_iter = factors
+//             .iter()
+//             .copied()
+//             .filter(|f| f.keys().iter().all(|k| m_keys.contains(k)));
+//
+//         // let msg = combine_factors(active_iter)?;
+//
+//         // Ok((Box::new(msg), rem_factors))
+//     }
+// }
+//
+// // pub fn combine_factors<'a, I>(active_factors: I) -> Result<GaussianFactor>
+// // where
+// //     I: IntoIterator<Item = &'a GaussianFactor>,
+// // {
+// //     let iter = active_factors.into_iter();
+// //     // Implementation...
+// //     todo!();
+// // }
+//
+// pub fn extract_forward_backward_coupling_factors<'a>(
+//     factors: &[&'a GaussianFactor],
+//     key: usize,
+// ) -> Vec<&'a GaussianFactor> {
+//     factors
+//         .iter()
+//         .filter(|f| f.keys().iter().any(|&k| k < key) && f.keys().iter().any(|&k| k > key))
+//         .cloned()
+//         .collect()
+// }
+//
+// pub struct ComputationLine {
+//     nodes: Vec<ComputationNode>,
+//     key_to_node: HashMap<usize, usize>,
+// }
+//
+// impl ComputationLine {
+//     // It is the caller responsibility to check that order has no duplicate.
+//     pub fn new(order: &[usize]) -> Self {
+//         let nodes = order.iter().map(|&key| ComputationNode::new(key)).collect();
+//         let key_to_node = order.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+//         ComputationLine { nodes, key_to_node }
+//     }
+//
+//     /// Returns the computation node in the line corresponding to the given key.
+//     pub fn node(&self, key: usize) -> Option<&ComputationNode> {
+//         self.key_to_node.get(&key).and_then(|&i| self.nodes.get(i))
+//     }
+//
+//     /// Forward-filtering pass over the computation line.
+//     pub fn forward<'a>(&mut self, factors: &[&'a GaussianFactor]) -> Result<()> {
+//         let mut m_keys = HashSet::with_capacity(self.nodes.len());
+//
+//         let mut active_factors: Vec<&'a GaussianFactor> = factors.to_vec();
+//
+//         for node in self.nodes.iter_mut() {
+//             m_keys.insert(node.key);
+//             let (msgf, rem_factors) = node.step(&active_factors, &m_keys)?;
+//
+//             node.msgf = Some(msgf);
+//             active_factors = rem_factors;
+//         }
+//         Ok(())
+//     }
+//
+//     /// Backward-filtering pass over the computation line.
+//     pub fn backward<'a>(&mut self, factors: &[&'a GaussianFactor]) -> Result<()> {
+//         let mut m_keys = HashSet::with_capacity(self.nodes.len());
+//
+//         let mut active_factors: Vec<&'a GaussianFactor> = factors.to_vec();
+//
+//         for node in self.nodes.iter_mut().rev() {
+//             m_keys.insert(node.key);
+//             let (msgb, rem_factors) = node.step(&active_factors, &m_keys)?;
+//             node.msgb = Some(msgb);
+//             active_factors = rem_factors;
+//         }
+//         Ok(())
+//     }
+//
+//     // pub fn solve(&self) -> Result<()> {
+//     //     for node in self.nodes.iter() {
+//     //         (node.msgf, node.msgb)
+//     //     }
+//     // }
+// }
 
-use arbor_ferrea::ui::*;
+// fn main() -> Result<()> {
+//     todo!();
+// }
 
-const X1: VarSymbol = VarSymbol('x', 1);
-const X2: VarSymbol = VarSymbol('x', 2);
-const X3: VarSymbol = VarSymbol('x', 3);
-const L1: VarSymbol = VarSymbol('l', 1);
-const L2: VarSymbol = VarSymbol('l', 2);
-
-fn main() -> Result<()> {
-    let mut factor_graph = GaussianFactorGraph::new();
-    let x1 = factor_graph.add_variable(X1, 3)?;
-    let x2 = factor_graph.add_variable(X2, 3)?;
-    let x3 = factor_graph.add_variable(X3, 3)?;
-    let l1 = factor_graph.add_variable(L1, 2)?;
-    let l2 = factor_graph.add_variable(L2, 2)?;
-
-    factor_graph.add_factor(
-        vec![x1],
-        vec![dmatrix![
-            1.0, 0.0, 0.0;
-            0.0, 1.0, 0.0;
-            0.0, 0.0, 1.0
-        ]],
-        dvector![0.0, 0.0, 0.0],
-        dmatrix![
-            1e12, 0.0, 0.0;
-            0.0, 1e12, 0.0;
-            0.0, 0.0, 1e12
-        ],
-    )?;
-    factor_graph.add_factor(
-        vec![x1, x2],
-        vec![
-            dmatrix![
-                1.0, 0.0, 0.0;
-                0.0, 1.0, 0.0;
-                0.0, 0.0, 1.0
-            ],
-            dmatrix![
-                -1.0, 0.0, 0.0;
-                0.0, -1.0, 0.0;
-                0.0, 0.0, -1.0
-            ],
-        ],
-        dvector![0.2, 1.0, -0.5],
-        dmatrix![
-            1.0, 0.2, 0.0;
-            0.2, 1.0, 0.0;
-            0.0, 0.0, 1.0
-        ],
-    )?;
-    factor_graph.add_factor(
-        vec![x2, x3],
-        vec![
-            dmatrix![
-                1.0, 0.0, 0.0;
-                0.0, 1.0, 0.0;
-                0.0, 0.0, 1.0
-            ],
-            dmatrix![
-                -1.0, 0.0, 0.0;
-                0.0, -1.0, 0.0;
-                0.0, 0.0, -1.0
-            ],
-        ],
-        dvector![-0.1, 0.8, 0.1],
-        dmatrix![
-            1.0, 0.0, 0.3;
-            0.0, 1.0, 0.1;
-            0.3, 0.1, 1.0
-        ],
-    )?;
-    factor_graph.add_factor(
-        vec![x1, l1],
-        vec![
-            dmatrix![
-                0.5, 0.5, 0.0;
-                0.0, 0.75, 0.25
-            ],
-            dmatrix![
-                -1.0, 0.0;
-                0.0, -1.0
-            ],
-        ],
-        dvector![0.0, 0.5],
-        dmatrix![
-            1.0, 0.2;
-            0.2, 1.0
-        ],
-    )?;
-    factor_graph.add_factor(
-        vec![x2, l1],
-        vec![
-            dmatrix![
-                0.6, 0.4, 0.0;
-                0.1, 0.8, 0.1
-            ],
-            dmatrix![
-                -0.5, -0.5;
-                0.0, -0.8
-            ],
-        ],
-        dvector![0.1, 0.2],
-        dmatrix![
-            0.8, 0.1;
-            0.1, 1.0
-        ],
-    )?;
-    factor_graph.add_factor(
-        vec![x3, l2],
-        vec![
-            dmatrix![
-                0.6, 0.4, 0.0;
-                0.1, 0.8, 0.1
-            ],
-            dmatrix![
-                -0.5, -0.5;
-                0.0, -0.8
-            ],
-        ],
-        dvector![0.8, 0.0],
-        dmatrix![
-            2.0, 0.2;
-            0.2, 2.0
-        ],
-    )?;
-
-    let order = [l1, l2, x1, x2, x3]; // user-defined elimination order
-    let tree = factor_graph.build_symbolic_tree(&order)?;
-    let sol = factor_graph.solve_seq(&tree)?;
-
-    println!("solution: {:?}", sol);
-
-    Ok(())
-}
+fn main() {}

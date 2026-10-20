@@ -11,11 +11,11 @@ use std::iter::zip;
 // use arbor_ferrea::symbolic::{SymbolicFactor, SymbolicTree};
 use arbor_ferrea::ui::*;
 
-const X1: VarSymbol = VarSymbol('x', 1);
-const X2: VarSymbol = VarSymbol('x', 2);
-const X3: VarSymbol = VarSymbol('x', 3);
-const L1: VarSymbol = VarSymbol('l', 1);
-const L2: VarSymbol = VarSymbol('l', 2);
+const X1: Symbol = Symbol('x', 1);
+const X2: Symbol = Symbol('x', 2);
+const X3: Symbol = Symbol('x', 3);
+const L1: Symbol = Symbol('l', 1);
+const L2: Symbol = Symbol('l', 2);
 
 #[test]
 /// Context: empty factor graphs

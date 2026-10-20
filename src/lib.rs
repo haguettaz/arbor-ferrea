@@ -9,7 +9,9 @@
 //! * **Computer Vision:** Bundle adjustment and 3D camera reconstruction.
 //! * **Geodesy & Engineering:** Geodetic network adjustment and structural analysis.
 
+pub mod factor_graph;
 pub mod gaussian;
 pub mod numeric;
+pub mod solver;
 pub mod symbolic;
 pub mod ui;
