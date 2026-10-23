@@ -7,7 +7,105 @@ use typed_arena::Arena;
 use crate::core::*;
 
 pub struct Smoother<P: Prior, R: Relation> {
-    factor_graph: FactorGraph<P, R>,
+    pub factor_graph: FactorGraph<P, R>,
+    arena: Arena<R>,
+}
+
+impl<P: Prior, R: Relation> Smoother<P, R> {
+    pub fn new(factor_graph: FactorGraph<P, R>) -> Self {
+        let arena = Arena::new();
+        Smoother {
+            factor_graph,
+            arena,
+        }
+    }
+    /// A full pass over the factor graph in the specified elimination order
+    /// Messages are allocated into the provided arena
+    /// The returned messages are references to the corresponding messages
+    /// All messages are kept in memory.
+    pub fn full_pass<'a>(&'a self, order: &[usize]) -> Result<Vec<Vec<&'a R>>>
+    where
+        P: Prior + Default,
+        R: Relation + Default,
+    {
+        let mut messages = vec![vec![]; order.len()];
+
+        let mut active_keys: HashSet<usize> = HashSet::new();
+        let mut coupled_keys: HashSet<usize> = HashSet::new();
+        let mut eliminated_keys: HashSet<usize> = HashSet::new();
+
+        let mut active_priors: Vec<&'a P> = self.factor_graph.priors().iter().collect();
+        let mut active_relations: Vec<&'a R> = self.factor_graph.relations().iter().collect();
+
+        let mut eliminated_priors: Vec<&'a P> = Vec::new();
+        let mut eliminated_relations: Vec<&'a R> = Vec::new();
+
+        for key in order {
+            active_keys.insert(*key);
+
+            coupled_keys.clear();
+            coupled_keys.extend(
+                active_relations
+                    .iter()
+                    .filter(|relation| relation.keys().iter().any(|k| !(active_keys.contains(k))))
+                    .flat_map(|relation| relation.keys())
+                    .copied(),
+            );
+            eliminated_keys.clear();
+            eliminated_keys.extend(active_keys.iter());
+            eliminated_keys.retain(|k| !(k == key || coupled_keys.contains(k)));
+            active_keys.retain(|k| !eliminated_keys.contains(k));
+
+            // Note: no need to clear eliminated_priors since drain(..) empties it
+            let mut i = 0;
+            while i < active_priors.len() {
+                if eliminated_keys.contains(&active_priors[i].key()) {
+                    eliminated_priors.push(active_priors.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+
+            let mut i = 0;
+            while i < active_relations.len() {
+                if active_relations[i]
+                    .keys()
+                    .iter()
+                    .any(|k| eliminated_keys.contains(k))
+                {
+                    eliminated_relations.push(active_relations.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+
+            if !eliminated_keys.is_empty() {
+                // Close the box using the drained eliminated factors (priors + relations)
+                let remaining_keys: Vec<usize> = active_keys
+                    .iter()
+                    .filter(|&k| eliminated_relations.iter().any(|r| r.depends_on(*k)))
+                    .copied()
+                    .collect();
+                active_relations.push(
+                    self.arena.alloc(
+                        R::from(
+                            eliminated_priors.drain(..),
+                            eliminated_relations.drain(..),
+                            remaining_keys,
+                            eliminated_keys.iter().copied(),
+                            |k| self.factor_graph.size(k).unwrap_or(0),
+                        )
+                        .with_context(|| format!("Failed to compute message for key {}", key))?,
+                    ),
+                );
+            }
+
+            // active_keys.insert(*key);
+            messages[*key].extend(active_relations.iter().filter(|r| r.is_message()).copied());
+        }
+
+        Ok(messages)
+    }
 }
 
 pub struct Filter<P: Prior, R: Relation> {
@@ -182,97 +280,6 @@ pub struct Filter<P: Prior, R: Relation> {
 //         Ok(solver)
 // }
 
-/// A full pass over the factor graph in the specified elimination order
-/// Messages are allocated into the provided arena
-/// The returned messages are references to the corresponding messages
-fn full_pass<'a, P, R>(
-    factor_graph: &'a FactorGraph<P, R>,
-    order: &[usize],
-    arena: &'a Arena<R>,
-) -> Result<Vec<Vec<&'a R>>>
-where
-    P: Prior + Default,
-    R: Relation + Default,
-{
-    let mut messages = vec![vec![]; order.len()];
-
-    let mut active_keys: HashSet<usize> = HashSet::new();
-    let mut coupled_keys: HashSet<usize> = HashSet::new();
-    let mut eliminated_keys: HashSet<usize> = HashSet::new();
-
-    let mut active_priors: Vec<&'a P> = factor_graph.priors().iter().collect();
-    let mut active_relations: Vec<&'a R> = factor_graph.relations().iter().collect();
-
-    let mut eliminated_priors: Vec<&'a P> = Vec::new();
-    let mut eliminated_relations: Vec<&'a R> = Vec::new();
-
-    for key in order {
-        active_keys.insert(*key);
-
-        coupled_keys.clear();
-        coupled_keys.extend(
-            active_relations
-                .iter()
-                .filter(|relation| relation.keys().iter().any(|k| !(active_keys.contains(k))))
-                .flat_map(|relation| relation.keys())
-                .copied(),
-        );
-        eliminated_keys.clear();
-        eliminated_keys.extend(active_keys.iter());
-        eliminated_keys.retain(|k| !(k == key || coupled_keys.contains(k)));
-        active_keys.retain(|k| !eliminated_keys.contains(k));
-
-        // Note: no need to clear eliminated_priors since drain(..) empties it
-        let mut i = 0;
-        while i < active_priors.len() {
-            if eliminated_keys.contains(&active_priors[i].key()) {
-                eliminated_priors.push(active_priors.remove(i));
-            } else {
-                i += 1;
-            }
-        }
-
-        let mut i = 0;
-        while i < active_relations.len() {
-            if active_relations[i]
-                .keys()
-                .iter()
-                .any(|k| eliminated_keys.contains(k))
-            {
-                eliminated_relations.push(active_relations.remove(i));
-            } else {
-                i += 1;
-            }
-        }
-
-        if !eliminated_keys.is_empty() {
-            // Close the box using the drained eliminated factors (priors + relations)
-            let remaining_keys: Vec<usize> = active_keys
-                .iter()
-                .filter(|&k| eliminated_relations.iter().any(|r| r.depends_on(*k)))
-                .copied()
-                .collect();
-            active_relations.push(
-                arena.alloc(
-                    R::from(
-                        eliminated_priors.drain(..),
-                        eliminated_relations.drain(..),
-                        remaining_keys,
-                        eliminated_keys.iter().copied(),
-                        |k| factor_graph.size(k).unwrap_or(0),
-                    )
-                    .with_context(|| format!("Failed to compute message for key {}", key))?,
-                ),
-            );
-        }
-
-        // active_keys.insert(*key);
-        messages[*key].extend(active_relations.iter().filter(|r| r.is_message()).copied());
-    }
-
-    Ok(messages)
-}
-
 //     pub fn optimize(&mut self) -> Result<()> {
 //         for reduced_factor_graph in self.reduced_factor_graphs.iter_mut() {
 //             let key = reduced_factor_graph.key;
@@ -431,10 +438,15 @@ mod tests {
             .add_relation(|id| Ok(MyRelation::new(vec![id], vec![x3, x4])))
             .unwrap();
 
-        let arena = Arena::new();
+        let smoother = Smoother::new(factor_graph);
 
-        let forward_messages = full_pass(&factor_graph, &[x0, x1, x2, x3, x4], &arena)
+        let forward_messages = smoother
+            .full_pass(&[x0, x1, x2, x3, x4])
             .expect("forward pass should work");
+
+        let backward_messages = smoother
+            .full_pass(&[x4, x3, x2, x1, x0])
+            .expect("backward pass should work");
 
         assert!(forward_messages[x0].is_empty());
         assert_eq!(forward_messages[x1].len(), 1);
@@ -443,9 +455,6 @@ mod tests {
         assert_eq!(forward_messages[x3].len(), 1);
         assert_eq!(forward_messages[x4].len(), 1);
         assert_eq!(forward_messages[x4][0].keys, vec![x4]);
-
-        let backward_messages = full_pass(&factor_graph, &[x4, x3, x2, x1, x0], &arena)
-            .expect("backward pass should work");
 
         assert!(backward_messages[x4].is_empty());
         assert!(backward_messages[x3].is_empty());
@@ -489,10 +498,15 @@ mod tests {
             .add_relation(|id| Ok(MyRelation::new(vec![id], vec![x2, x5])))
             .unwrap();
 
-        let arena = Arena::new();
+        let smoother = Smoother::new(factor_graph);
 
-        let forward_messages = full_pass(&factor_graph, &[x0, x1, x2, x3, x4, x5], &arena)
+        let forward_messages = smoother
+            .full_pass(&[x0, x1, x2, x3, x4, x5])
             .expect("forward pass should work");
+
+        let backward_messages = smoother
+            .full_pass(&[x5, x4, x3, x2, x1, x0])
+            .expect("backward pass should work");
 
         assert!(forward_messages[x0].is_empty());
         assert_eq!(forward_messages[x1].len(), 1);
@@ -503,9 +517,6 @@ mod tests {
         assert_eq!(forward_messages[x4][1].keys, vec![x2, x4]);
         assert_eq!(forward_messages[x5].len(), 1);
         assert_eq!(forward_messages[x5][0].keys, vec![x5]);
-
-        let backward_messages = full_pass(&factor_graph, &[x5, x4, x3, x2, x1, x0], &arena)
-            .expect("backward pass should work");
 
         assert!(backward_messages[x5].is_empty());
         assert!(backward_messages[x4].is_empty());
@@ -550,10 +561,15 @@ mod tests {
             .add_relation(|id| Ok(MyRelation::new(vec![id], vec![x1, x4])))
             .unwrap();
 
-        let arena = Arena::new();
+        let smoother = Smoother::new(factor_graph);
 
-        let forward_messages = full_pass(&factor_graph, &[x0, x1, x2, x3, x4], &arena)
+        let forward_messages = smoother
+            .full_pass(&[x0, x1, x2, x3, x4])
             .expect("forward pass should work");
+
+        let backward_messages = smoother
+            .full_pass(&[x4, x3, x2, x1, x0])
+            .expect("backward pass should work");
 
         assert!(forward_messages[x0].is_empty());
         assert!(forward_messages[x1].is_empty());
@@ -561,9 +577,6 @@ mod tests {
         assert_eq!(forward_messages[x3].len(), 1);
         assert_eq!(forward_messages[x4].len(), 1);
         assert_eq!(forward_messages[x4][0].keys, vec![x4]);
-
-        let backward_messages = full_pass(&factor_graph, &[x4, x3, x2, x1, x0], &arena)
-            .expect("backward pass should work");
 
         assert!(backward_messages[x4].is_empty());
         assert!(backward_messages[x3].is_empty());
