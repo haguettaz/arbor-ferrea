@@ -9,411 +9,265 @@
 //! (Prof. H.-A. Loeliger, ETH Zürich, 2025).
 
 use anyhow::{Context, Result, ensure};
-use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView, DVectorViewMut};
-use std::{collections::HashSet, iter::zip};
+use itertools::izip;
+use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView, RealField};
+use std::collections::{HashMap, HashSet};
 
-use crate::numeric::{NumericClique, NumericContext, NumericTree};
+use crate::core::*;
 
-/// Diagonal regularizer added before computing the Cholesky decomposition in
-/// [`GaussianClique::build_and_close`].
-/// Warning: to high value can lead to numerical imprecision.
-const CHOL_REG: f64 = 1e-15;
-
-/// A forest of elimination trees for exact inference on Gaussian factor graphs.
-///
-/// This structure organizes the numerical factor graph into independent rooted trees of cliques.
-/// It orchestrates a two-pass solver: a bottom-up elimination pass (upward filtering) to
-/// marginalize variables, and a top-down back-substitution pass (downward deciding) to
-/// compute their exact assignments.
-///
-/// Both sequential and parallel execution modes are provided via the [`NumericTree`] trait.
-pub struct GaussianTree {
-    /// Root nodes corresponding to independent elimination trees in the forest.
-    pub roots: Vec<GaussianClique>,
-}
-
-impl NumericTree for GaussianTree {
-    /// Tree node type encapsulating the Gaussian clique and its workspaces.
-    type Clique = GaussianClique;
-
-    /// Instantiates a forest from root nodes.
-    fn from_roots(roots: Vec<Self::Clique>) -> Self {
-        Self { roots }
-    }
-
-    /// Returns a slice of the forest's root cliques.
-    fn roots(&self) -> &[Self::Clique] {
-        &self.roots
-    }
-
-    /// Returns a mutable slice of the forest's root cliques.
-    fn roots_mut(&mut self) -> &mut [Self::Clique] {
-        &mut self.roots
-    }
-
-    /// Returns the children of a given clique.
-    fn children(clique: &Self::Clique) -> &[Self::Clique] {
-        &clique.children
-    }
-
-    /// Returns a mutable slice of children of a given clique.
-    fn children_mut(clique: &mut Self::Clique) -> &mut [Self::Clique] {
-        &mut clique.children
-    }
-}
-
-/// A Gaussian clique eliminating one frontal variable `X` given its separator variables `S`.
-///
-/// The clique gathers its factors and incoming messages into a single Gaussian observation
-/// `Y := A X + B S` parameterized by a weighted mean vector and a precision matrix.
-/// Eliminating `X` yields a new Gaussian factor on `Z := B S` which is propagated to the parent clique.
-pub struct GaussianClique {
-    /// Child cliques, eliminated before this one.
-    children: Vec<GaussianClique>,
-
-    /// Key of the frontal variable `x`.
-    front_key: usize,
-    /// Keys of the separator variables `s`.
-    sep_keys: Vec<usize>,
-
-    /// Matrices `A` of shape `(dim_y, dim_x)`, coupling the frontal variable to the observations.
-    _a: DMatrix<f64>,
-    /// Matrix `B` of shape `(dim_y, dim_s)`, coupling the separator variables to the observations.
-    b: DMatrix<f64>,
-    /// Context of the separator variable as tuples `(key, col range)` aligned with `B`.
-    sep_layout: Vec<(usize, usize, usize)>,
-
-    /// Observation weighted mean vector of shape (dim_y,)
-    _xiby: DVector<f64>,
-    /// Observation precision matrix of shape (dim_y, dim_y)
-    _wby: DMatrix<f64>,
-
-    /// Conditional mean `m_x = V Aᵀ ξ` of the frontal variable at `s = 0`, of shape `(dim_x,)`.
-    mtx: DVector<f64>,
-    /// Gain `V Aᵀ W` of shape `(dim_x, dim_y)`.
-    vtx_at_wby: DMatrix<f64>,
-    /// Workspace for `Σ_k B_k s_k`, of shape `(dim_y,)`.
-    b_s: DVector<f64>,
-    /// Workspace for the separator values
-    s: DVector<f64>,
-}
-
-impl GaussianClique {
-    /// Updates the clique after the matrices of its factors change, e.g., after relinearization.
-    ///
-    /// # Panics
-    ///
-    /// Always panics, as it is not implemented yet.
-    pub fn update() -> Result<()> {
-        todo!("Implement update, e.g., when jacobians are updated.");
-    }
-}
-
-impl NumericClique for GaussianClique {
-    /// Input factor type representing local Gaussian factors.
-    type Factor = GaussianFactor;
-
-    /// Upward Gaussian message type passed from children to parents during clique closure.
-    type Message = GaussianFactor;
-
-    /// Scalar element type for variable vectors and numerical operations.
-    type Scalar = f64;
-
-    // /// Shared contextual metadata threaded through the build and solve phases.
-    // type Context = GaussianContext;
-
-    /// Returns the child cliques.
-    fn children(&self) -> &[Self] {
-        &self.children
-    }
-
-    /// Returns the child cliques mutably.
-    fn children_mut(&mut self) -> &mut [Self] {
-        &mut self.children
-    }
-
-    /// Expose the main variable key so the tree can resolve its memory.
-    fn front_key(&self) -> usize {
-        self.front_key
-    }
-
-    /// Expose the separator keys so the tree can resolve their memory.
-    fn sep_keys(&self) -> &[usize] {
-        &self.sep_keys
-    }
-
-    /// Assembles the Gaussian clique for the specified variables and eliminates the frontal
-    /// variable, yielding the resolved clique and the outgoing message to its parent.
-    ///
-    /// The resulting message is a Gaussian factor representing a linear observation over the
-    /// separator variables, parameterized by a weighted mean and precision matrix.
-    ///
-    /// # Orchestration Invariants
-    ///
-    /// To ensure mathematical correctness, the caller (the tree) must
-    /// guarantee the following preconditions:
-    /// * The frontal and separator keys are strictly disjoint.
-    /// * The separator keys contains no duplicate entries.
-    /// * All provided factors and messages explicitly involve the frontal variable.
-    /// * All provided factors and messages involve *only* the frontal and separator variables.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a variable's memory layout cannot be resolved from the `ctx`,
-    /// or if the internal Cholesky decomposition fails (e.g., due to an ill-conditioned matrix).
-    fn build_and_close<C: NumericContext>(
-        front_key: usize,
-        sep_keys: HashSet<usize>,
-        factors: Vec<&GaussianFactor>,
-        in_msgs: Vec<GaussianFactor>,
-        children: Vec<GaussianClique>,
-        ctx: &C,
-    ) -> Result<(GaussianClique, GaussianFactor)> {
-        // Observation domain
-        let dim_y = factors.iter().map(|f| f.dim_y()).sum::<usize>()
-            + in_msgs.iter().map(|f| f.dim_y()).sum::<usize>();
-        let mut xiby = DVector::zeros(dim_y);
-        let mut wby = DMatrix::zeros(dim_y, dim_y);
-
-        // Frontal variable domain
-        let (_, dim_x) = ctx.memory_layout(front_key).with_context(|| {
-            format!(
-                "The dimension of the frontal variable {} cannot be found in the variable context",
-                front_key
-            )
-        })?;
-        let mut a = DMatrix::zeros(dim_y, dim_x);
-
-        // Separator variables domain
-        let sep_keys: Vec<usize> = sep_keys.into_iter().collect();
-        let mut sep_layout = Vec::<(usize, usize, usize)>::with_capacity(sep_keys.len());
-        let mut icol = 0;
-        for &key in &sep_keys {
-            let (_, ncols) = ctx.memory_layout(key).with_context(|| format!("The dimension of the separator variable {} cannot be found in the variable context", key))?;
-            sep_layout.push((key, icol, ncols));
-            icol += ncols;
-        }
-        let dim_s = icol;
-        let mut b = DMatrix::zeros(dim_y, dim_s);
-
-        // Init vectors and matrices
-        let mut irow = 0;
-        for f in factors.into_iter().chain(in_msgs.iter()) {
-            let nrows = f.dim_y();
-            if let Some(mat) = f.a_view(front_key) {
-                ensure!(
-                    mat.ncols() == dim_x,
-                    "Factor block for frontal variable {} has {} columns, expected {}",
-                    front_key,
-                    mat.ncols(),
-                    dim_x
-                );
-                a.rows_mut(irow, nrows).copy_from(&mat);
-            }
-            for &(key, icol, ncols) in &sep_layout {
-                if let Some(mat) = f.a_view(key) {
-                    ensure!(
-                        mat.ncols() == ncols,
-                        "Factor block for separator variable {} has {} columns, expected {}",
-                        key,
-                        mat.ncols(),
-                        ncols
-                    );
-                    b.view_mut((irow, icol), (nrows, ncols)).copy_from(&mat);
-                }
-            }
-            xiby.rows_mut(irow, nrows).copy_from(&f.xiby_view());
-            wby.view_mut((irow, irow), (nrows, nrows))
-                .copy_from(&f.wby_view());
-            irow += nrows;
-        }
-
-        let mut xitx = DVector::zeros(dim_x);
-        a.tr_mul_to(&xiby, &mut xitx); // xitx = a.t xiby
-
-        let mut at_wby = DMatrix::zeros(dim_x, dim_y);
-        a.tr_mul_to(&wby, &mut at_wby);
-
-        // let mut wtx = DMatrix::zeros(dim_x, dim_x);
-        let mut wtx = DMatrix::from_diagonal_element(dim_x, dim_x, CHOL_REG); // ensure wtx is positive definite
-        wtx.gemm(1.0, &at_wby, &a, 1.0); // wtx = a.t wby a
-        let rtx = wtx.cholesky().with_context(|| {
-            format!(
-                "Cholesky decomposition for frontal variable {} failed",
-                front_key
-            )
-        })?;
-
-        let mut mtx = xitx.clone();
-        rtx.solve_mut(&mut mtx); // wtx mtx = xitx
-
-        let mut vtx_at_wby = at_wby.clone();
-        rtx.solve_mut(&mut vtx_at_wby);
-
-        let mut xibz = xiby.clone(); // xibz = xiby - wby a mtx
-        xibz.gemv_tr(-1.0, &at_wby, &mtx, 1.0);
-
-        let mut wbz = wby.clone(); // wbz = wby - wby a vtx a.t wby
-        wbz.gemm_tr(-1.0, &at_wby, &vtx_at_wby, 1.0);
-
-        let s = DVector::from_element(dim_s, f64::NAN);
-        let b_s = DVector::from_element(dim_y, f64::NAN);
-
-        let out_msg = GaussianFactor::new_unchecked(
-            sep_keys.clone(),
-            sep_layout.clone(),
-            b.clone(),
-            xibz,
-            wbz,
-        );
-        let clique = GaussianClique {
-            children,
-            front_key,
-            sep_keys,
-            sep_layout,
-            _a: a,
-            b,
-            _xiby: xiby,
-            _wby: wby,
-            mtx,
-            vtx_at_wby,
-            s,
-            b_s,
-        };
-
-        Ok((clique, out_msg))
-    }
-
-    /// Writes the conditional mean `x̂(s)` of the frontal variable into `out`, given the values
-    /// `sep_vals` of the separator variables, aligned with `sep_keys`.
-    fn decide(&mut self, out: &mut [Self::Scalar], sep_vals: &[&[Self::Scalar]]) -> Result<()> {
-        // Load the separator values into self.s
-        for (&(_, irow, nrows), sep_val) in zip(self.sep_layout.iter(), sep_vals.iter()) {
-            let mut s = self.s.rows_mut(irow, nrows);
-            s.copy_from_slice(sep_val);
-        }
-        // Compute the product b s into the corresponding pre-allocated workspace.
-        self.b.mul_to(&self.s, &mut self.b_s);
-
-        // Compute x := mtx - vtx a.t wby b s into out.
-        let mut x_view = DVectorViewMut::from_slice(out, out.len());
-        x_view.copy_from(&self.mtx);
-        x_view.gemv(-1.0, &self.vtx_at_wby, &self.b_s, 1.0);
-
-        Ok(())
-    }
-}
-
-/// A Gaussian factor over a linear observation parameterized by precision and a weighted mean.
-pub struct GaussianFactor {
-    /// Variable keys.
+#[derive(Debug, PartialEq)]
+pub struct GaussianFactor<T> {
+    id: usize,
     keys: Vec<usize>,
-    /// Layout of the variables in A, i.e., tuples (key, icol, ncols).
-    layout: Vec<(usize, usize, usize)>,
-    /// Observation model matrices of shape `(dim_y, dim_x)`
-    a: DMatrix<f64>,
-    /// Observation weighted mean of shape `(dim_y,)`.
-    xiby: DVector<f64>,
-    /// Observation precision of shape `(dim_y, dim_y)`.
-    wby: DMatrix<f64>,
+    // key_to_size: HashMap<usize, usize>,
+    a_vec: Vec<DMatrix<T>>,
+    // a: DMatrix<T>,
+    // layout: Vec<(usize, usize)>, // aligned with keys, indicate the location of the keys in the columns of a
+    xiby: DVector<T>,
+    wby: DMatrix<T>,
 }
 
-impl GaussianFactor {
-    /// Creates a Gaussian factor without validating its parameters.
-    ///
-    /// The caller must ensure that `keys` and `ctx` contains the same keys,
-    /// that `a` has shape `(dim_y, dim_x)` where `dim_x` is the total size of the keys,
-    /// and that `xiby` and `wby` have shapes  `(dim_y,)` and `(dim_y, dim_y)`.
-    pub fn new_unchecked(
-        keys: Vec<usize>,
-        layout: Vec<(usize, usize, usize)>,
-        a: DMatrix<f64>,
-        xiby: DVector<f64>,
-        wby: DMatrix<f64>,
-    ) -> Self {
-        // Check that every key in ctx is in keys.
-        debug_assert!(!layout.iter().any(|(ck, _, _)| !keys.contains(ck)),);
-        // Check that every key in keys is in ctx.
-        debug_assert!(
-            !keys
-                .iter()
-                .any(|k| !layout.iter().any(|(ck, _, _)| ck == k)),
-        );
-
-        // Check dimensions
-        debug_assert!(a.ncols() == layout.iter().map(|(_, _, ncols)| ncols).sum());
-        debug_assert!(a.nrows() == xiby.nrows());
-        debug_assert!(a.nrows() == wby.nrows());
-        debug_assert!(a.nrows() == wby.ncols());
-
-        Self {
-            keys,
-            layout,
-            a,
-            xiby,
-            wby,
-        }
-    }
-
-    pub fn try_new(
-        ctx: Vec<(usize, usize)>, // (key, size)
-        a: DMatrix<f64>,
-        xiby: DVector<f64>,
-        wby: DMatrix<f64>,
-    ) -> Result<Self> {
-        ensure!(
-            a.ncols() == ctx.iter().map(|(_, ncols)| ncols).sum(),
-            "The shape of a is not compatible with ctx."
-        );
-        ensure!(
-            a.nrows() == xiby.nrows(),
-            "The shape of a is not compatible with xiby."
-        );
-        ensure!(
-            (a.nrows() == wby.nrows()) && (a.nrows() == wby.ncols()),
-            "The shape of a is not compatible with wby."
-        );
-
-        let keys = ctx.iter().map(|&(key, _)| key).collect();
-
-        let mut layout = Vec::with_capacity(ctx.len());
-        let mut icol = 0;
-        for &(key, size) in &ctx {
-            layout.push((key, icol, size));
-            icol += size;
-        }
-
-        Ok(Self {
-            keys,
-            layout,
-            a,
-            xiby,
-            wby,
-        })
-    }
-
-    pub fn keys(&self) -> &[usize] {
-        &self.keys
-    }
-
+impl<T: RealField> GaussianFactor<T> {
     /// Returns the layout of the variable.
-    fn layout(&self, key: usize) -> Option<(usize, usize, usize)> {
-        self.layout.iter().find(|(k, _, _)| *k == key).cloned()
+    // fn layout(&self, key: usize) -> Option<(usize, usize)> {
+    //     let idx = self.keys.iter().position(|&k| k == key)?;
+    //     self.layout.get(idx).copied()
+    // }
+    //
+
+    pub fn key_to_pos(&self, key: usize) -> Option<usize> {
+        self.keys.iter().position(|&k| k == key)
     }
 
     /// Returns a view on the block column of the variable `key`, or `None` if absent.
-    pub fn a_view(&self, key: usize) -> Option<DMatrixView<'_, f64>> {
-        self.layout(key)
-            .map(|(_, icol, ncols)| self.a.columns(icol, ncols))
+    pub fn a_view(&self, key: usize) -> Option<DMatrixView<'_, T>> {
+        // self.layout(key)
+        //     .map(|(icol, ncols)| self.a.columns(icol, ncols))
+        self.key_to_pos(key).map(|idx| self.a_vec[idx].as_view())
+        // Some(self.a[idx].as_view())
     }
 
     /// Returns a view on the observation weighted mean vector.
-    pub fn xiby_view(&self) -> DVectorView<'_, f64> {
+    pub fn xiby_view(&self) -> DVectorView<'_, T> {
         self.xiby.as_view()
     }
 
     /// Returns a view on the observation precision matrix.
-    pub fn wby_view(&self) -> DMatrixView<'_, f64> {
+    pub fn wby_view(&self) -> DMatrixView<'_, T> {
+        self.wby.as_view()
+    }
+
+    /// Returns the observation dimension.
+    pub fn dim_y(&self) -> usize {
+        self.xiby.nrows()
+    }
+
+    // pub fn from() -> Result<GaussianFactor<T>> {}
+}
+
+impl<T> FactorBase for GaussianFactor<T> {
+    fn keys(&self) -> &[usize] {
+        &self.keys
+    }
+}
+
+impl<T: RealField> Factor for GaussianFactor<T> {
+    type TargetMessage = GaussianMessage<T>;
+    fn id(&self) -> usize {
+        self.id
+    }
+}
+
+// pub struct LinearModel<T> {
+//     keys: Vec<usize>,
+//     mats: Vec<DMatrix<T>>,
+// }
+//
+// impl<T> LinearModel<T> {
+//     pub fn rmult(&self, other: &DMatrixView<T>, on_keys: &[usize]) -> Result<DMatrixView<T>> {
+//         other * b
+//     }
+// }
+
+#[derive(Clone, Debug)]
+pub struct GaussianMessage<T> {
+    keys: Vec<usize>,
+    a_vec: Vec<DMatrix<T>>, // aligned with keys
+    // a_layout: Vec<(usize, usize)>, // aligned with keys
+    xiby: DVector<T>,
+    wby: DMatrix<T>,
+    closed_factors: Vec<usize>,
+}
+
+impl<T: RealField> GaussianMessage<T> {
+    // /// Returns the layout of the variable.
+    // fn layout(&self, key: usize) -> Option<(usize, usize)> {
+    //     let idx = self.keys.iter().position(|&k| k == key)?;
+    //     self.a_layout.get(idx).copied()
+    // }
+    pub fn key_to_pos(&self, key: usize) -> Option<usize> {
+        self.keys.iter().position(|&k| k == key)
+    }
+
+    /// Returns a view on the matrix associated with the variable `key`, or `None` if absent.
+    pub fn a_view(&self, key: usize) -> Option<DMatrixView<'_, T>> {
+        self.key_to_pos(key).map(|idx| self.a_vec[idx].as_view())
+        // self.layout(key)
+        //     .map(|(icol, ncols)| self.a.columns(icol, ncols))
+    }
+
+    /// Create a new Gaussian message by aggregating observation models and prior models and eliminating some variables.
+    pub fn from<C>(
+        obs_models: &[&GaussianObservation<T>],
+        prior_models: &[Option<&GaussianPrior<T>>],
+        keys: &[usize],
+        on_keys: &[usize],
+        closed_factors: &[usize],
+        size_ctx: C,
+    ) -> Result<GaussianMessage<T>>
+    where
+        C: Fn(usize) -> usize,
+    {
+        let dim_u = on_keys.iter().map(|&key| size_ctx(key)).sum();
+        let dim_y = obs_models.iter().map(|&obs_model| obs_model.dim_y()).sum();
+
+        // Allocate temporary matrices and vectors
+        let mut xifu_plus_bt_xiby = DVector::zeros(dim_u);
+        let mut wfu_plus_bt_wby_b = DMatrix::zeros(dim_u, dim_u);
+
+        // Load data from the prior models
+        let mut pos_key = 0;
+        for (key, prior_model) in izip!(on_keys.iter(), prior_models.iter()) {
+            let size_key = size_ctx(*key);
+            if let Some(prior) = prior_model {
+                let xifu = prior.xifx_view();
+                xifu_plus_bt_xiby
+                    .rows_mut(pos_key, size_key)
+                    .copy_from(xifu);
+
+                let wfu = prior.wfx_view();
+                wfu_plus_bt_wby_b
+                    .view_mut((pos_key, pos_key), (size_key, size_key))
+                    .copy_from(wfu);
+            }
+            pos_key += size_key;
+        }
+
+        // Collect the matrices of remaining variables
+        let mut a_vec = Vec::with_capacity(keys.len());
+        let (mut pos_obs, mut pos_key) = (0, 0);
+        for key in keys.iter() {
+            let size_key = size_ctx(*key);
+            let mut a_key = DMatrix::zeros(dim_y, size_key);
+            pos_obs = 0;
+            for obs_model in obs_models.iter() {
+                let size_obs = obs_model.dim_y();
+                if let Some(a) = obs_model.a_view(key) {
+                    a_key.rows_mut(pos_obs, size_obs).copy_from(a);
+                }
+                pos_obs += size_obs;
+            }
+            pos_key += size_key;
+            a_vec.push(a_key);
+        }
+
+        // Load xiby from observation models
+        let mut xiby = DVector::zeros(dim_y);
+        let mut pos_obs = 0;
+        for obs_model in obs_models.iter() {
+            let size_obs = obs_model.dim_y();
+            xiby.rows_mut(pos_obs, size_obs)
+                .copy_from(obs_model.xiby_view());
+            pos_obs += size_obs;
+        }
+
+        // Load wby_b from observation models
+        let mut wby_b = DMatrix::zeros(dim_y, dim_u);
+        let (mut pos_obs, mut pos_key) = (0, 0);
+        for key in on_keys.iter() {
+            let size_key = size_ctx(*key);
+            pos_obs = 0;
+            for obs_model in obs_models.iter() {
+                let size_obs = obs_model.dim_y();
+                if let Some(b) = obs_model.a_view(key) {
+                    wby_b
+                        .view_mut((pos_obs, pos_key), (size_obs, size_key))
+                        .gemm(T::one(), obs_model.wby_view(), b, T::one());
+                }
+                pos_obs += size_obs;
+            }
+            pos_key += size_key;
+        }
+
+        // Add bt_xiby to allocated xifu_plus_bt_xiby already containing xifu
+        // Add bt_wby_b to allocated wfu_plus_bt_wby_b already containing wfu
+        let mut pos_key = 0;
+        for key in on_keys.iter() {
+            let size_key = size_ctx(*key);
+            pos_obs = 0;
+            for obs_model in obs_models.iter() {
+                let size_obs = obs_model.dim_y();
+                if let Some(b) = obs_model.a_view(key) {
+                    xifu_plus_bt_xiby.rows_mut(pos_key, size_key).gemm_tr(
+                        T::one(),
+                        b,
+                        &wby_b.rows(pos_obs, size_obs),
+                        T::one(),
+                    );
+                    wfu_plus_bt_wby_b.rows_mut(pos_key, size_key).gemm_tr(
+                        T::one(),
+                        b,
+                        &wby_b.rows(pos_obs, size_obs),
+                        T::one(),
+                    );
+                }
+                pos_obs += size_obs;
+            }
+            pos_key += size_key;
+        }
+
+        // Solve ( wfu + bt * wby * b ) * h = bt * wby via Cholesky decomposition
+        let chol_wfu_plus_bt_wby_b = wfu_plus_bt_wby_b
+            .cholesky()
+            .with_context(|| format!("Cholesky decomposition failed"))?;
+
+        let bt_wby = wby_b.transpose();
+        let h = chol_wfu_plus_bt_wby_b.solve(&wby_b.transpose());
+
+        // Compute:
+        //  xibz = xiby - ht (xifu + bt xiby)
+        //  wby = wby - ht bt wby
+        let mut xibz = DVector::zeros(dim_y);
+        let mut wbz = DMatrix::zeros(dim_y, dim_y);
+        let mut pos_obs = 0;
+        for obs_model in obs_models.iter() {
+            let size_obs = obs_model.dim_y();
+            xibz.rows_mut(pos_obs, size_obs)
+                .copy_from(obs_model.xiby_view());
+            wbz.view_mut((pos_obs, pos_obs), (size_obs, size_obs))
+                .copy_from(obs_model.wby_view());
+            pos_obs += size_obs;
+        }
+        xibz.gemm_tr(T::one().neg(), &h, &xifu_plus_bt_xiby, T::one());
+        wbz.gemm_tr(T::one().neg(), &h, &bt_wby, T::one());
+
+        let msg = GaussianMessage {
+            keys: keys.to_vec(),
+            a_vec,
+            xiby: xibz,
+            wby: wbz,
+            closed_factors: closed_factors.to_vec(),
+        };
+        Ok(msg)
+    }
+
+    /// Returns a view on the observation weighted mean vector.
+    pub fn xiby_view(&self) -> DVectorView<'_, T> {
+        self.xiby.as_view()
+    }
+
+    /// Returns a view on the observation precision matrix.
+    pub fn wby_view(&self) -> DMatrixView<'_, T> {
         self.wby.as_view()
     }
 
@@ -423,42 +277,233 @@ impl GaussianFactor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// Base implementation for Message
+impl<T> FactorBase for GaussianMessage<T> {
+    fn keys(&self) -> &[usize] {
+        &self.keys
+    }
+}
 
-    #[test]
-    fn test_gaussian_factor() {
-        let res = GaussianFactor::try_new(
-            vec![(0, 2), (1, 3)],
-            DMatrix::zeros(4, 5),
-            DVector::zeros(4),
-            DMatrix::identity(4, 4),
-        );
-        assert!(res.is_ok());
+// // Forward FactorBase methods through the enum
+// impl<T> FactorBase for GaussianFactor<T> {
+//     fn keys(&self) -> &[usize] {
+//         match self {
+//             Self::Prior(prior) => prior.keys(),
+//             Self::Observation(obs) => obs.keys(),
+//         }
+//     }
+// }
+//
+// // Forward Factor methods through the enum
+// impl<T: RealField> Factor for GaussianFactor<T> {
+//     type TargetMessage = GaussianMessage<T>;
+//
+//     fn id(&self) -> usize {
+//         match self {
+//             Self::Prior(prior) => prior.id(),
+//             Self::Observation(obs) => obs.id(),
+//         }
+//     }
+// }
 
-        let res = GaussianFactor::try_new(
-            vec![(0, 2), (1, 4)],
-            DMatrix::zeros(4, 5),
-            DVector::zeros(4),
-            DMatrix::identity(4, 4),
-        );
-        assert!(res.is_err(), "Incompatible a and ctx");
+impl<T: RealField> Message for GaussianMessage<T> {
+    type TargetFactor = GaussianFactor<T>;
 
-        let res = GaussianFactor::try_new(
-            vec![(0, 2), (1, 3)],
-            DMatrix::zeros(4, 5),
-            DVector::zeros(3),
-            DMatrix::identity(4, 4),
-        );
-        assert!(res.is_err(), "Incompatible a and xiby");
+    fn closed_factors(&self) -> &[usize] {
+        &self.closed_factors
+    }
 
-        let res = GaussianFactor::try_new(
-            vec![(0, 2), (1, 3)],
-            DMatrix::zeros(4, 5),
-            DVector::zeros(4),
-            DMatrix::identity(2, 4),
-        );
-        assert!(res.is_err(), "Incompatible a and wby");
+    fn close<'a, I, K, C>(factors: I, on_keys: K, ctx: C) -> Result<Self>
+    where
+        I: IntoIterator<Item = AnyFactor<'a, Self::TargetFactor>>,
+        K: IntoIterator<Item = usize>,
+        C: Fn(usize) -> usize,
+        Self::TargetFactor: 'a,
+    {
+        let factors: Vec<_> = factors.into_iter().collect();
+        let on_keys: HashSet<usize> = on_keys.into_iter().collect();
+        let mut rem_keys = HashSet::new();
+
+        let mut closed_factors = Vec::new();
+
+        // Aggregate all keys and track which factors/messages are being closed
+        for factor in &factors {
+            for &key in factor.keys() {
+                rem_keys.insert(key);
+            }
+
+            match factor {
+                AnyFactor::BorrowedFactor(fct) => {
+                    closed_factors.push(fct.id());
+                }
+
+                AnyFactor::OwnedMessage(msg) => {
+                    closed_factors.extend_from_slice(msg.closed_factors());
+                }
+            }
+        }
+
+        // Remove the keys to eliminate
+        for key in &on_keys {
+            rem_keys.remove(key);
+        }
+        let mut rem_keys: Vec<usize> = rem_keys.into_iter().collect();
+        rem_keys.sort_unstable();
+        let mut on_keys: Vec<usize> = on_keys.into_iter().collect();
+        on_keys.sort_unstable();
+
+        // Compute the dimension of the observation (aggregated overall factors)
+        let mut dim_y = 0;
+        for factor in &factors {
+            match factor {
+                AnyFactor::BorrowedFactor(fct) => {
+                    dim_y += fct.dim_y();
+                }
+
+                AnyFactor::OwnedMessage(msg) => {
+                    closed_factors.extend_from_slice(msg.closed_factors());
+                    dim_y += msg.dim_y();
+                }
+            }
+        }
+
+        let mut a_layout = Vec::with_capacity(rem_keys.len());
+        let mut icol = 0;
+        for &key in &rem_keys {
+            let ncols = ctx(key);
+            a_layout.push((icol, ncols));
+            icol += ncols;
+        }
+        let dim_x = icol;
+        let mut a = DMatrix::zeros(dim_y, dim_x);
+
+        let mut b_layout = Vec::with_capacity(on_keys.len());
+        let mut col = 0;
+        for &key in &on_keys {
+            let ncols = ctx(key);
+            b_layout.push((col, ncols));
+            col += ncols;
+        }
+        let dim_u = col;
+        let mut b = DMatrix::zeros(dim_y, dim_u);
+
+        // Initialize the observations and associated precisions
+        let mut xiby = DVector::zeros(dim_y);
+        let mut wby = DMatrix::zeros(dim_y, dim_y);
+
+        let mut irow = 0;
+        for factor in factors {
+            match factor {
+                AnyFactor::BorrowedFactor(fct) => {
+                    let nrows = fct.dim_y();
+
+                    // Fill the matrix A related to the remaining variables
+                    for (key, (icol, ncols)) in izip!(rem_keys.iter(), a_layout.iter()) {
+                        if let Some(mat) = fct.a_view(*key) {
+                            ensure!(
+                                mat.ncols() == *ncols,
+                                "Factor block for variable {} has {} columns, expected {}",
+                                key,
+                                mat.ncols(),
+                                ncols
+                            );
+                            a.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
+                        }
+                    }
+
+                    // Fill the matrix B related to the eliminated variables
+                    for (key, (icol, ncols)) in izip!(on_keys.iter(), b_layout.iter()) {
+                        if let Some(mat) = fct.a_view(*key) {
+                            ensure!(
+                                mat.ncols() == *ncols,
+                                "Factor block for variable {} has {} columns, expected {}",
+                                key,
+                                mat.ncols(),
+                                ncols
+                            );
+                            b.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
+                        }
+                    }
+
+                    // Fill the observation and precisions
+                    xiby.rows_mut(irow, nrows).copy_from(&fct.xiby_view());
+                    wby.view_mut((irow, irow), (nrows, nrows))
+                        .copy_from(&fct.wby_view());
+                    irow += nrows;
+                }
+                AnyFactor::OwnedMessage(msg) => {
+                    let nrows = msg.dim_y();
+
+                    // Fill the matrix A related to the remaining variables
+                    for (key, (icol, ncols)) in izip!(rem_keys.iter(), a_layout.iter()) {
+                        if let Some(mat) = msg.a_view(*key) {
+                            ensure!(
+                                mat.ncols() == *ncols,
+                                "Factor block for variable {} has {} columns, expected {}",
+                                key,
+                                mat.ncols(),
+                                ncols
+                            );
+                            a.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
+                        }
+                    }
+
+                    // Fill the matrix B related to the eliminated variables
+                    for (key, (icol, ncols)) in izip!(on_keys.iter(), b_layout.iter()) {
+                        if let Some(mat) = msg.a_view(*key) {
+                            ensure!(
+                                mat.ncols() == *ncols,
+                                "Factor block for variable {} has {} columns, expected {}",
+                                key,
+                                mat.ncols(),
+                                ncols
+                            );
+                            b.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
+                        }
+                    }
+
+                    // Fill the observation and precisions
+                    xiby.rows_mut(irow, nrows).copy_from(&msg.xiby_view());
+                    wby.view_mut((irow, irow), (nrows, nrows))
+                        .copy_from(&msg.wby_view());
+                    irow += nrows;
+                }
+            }
+        }
+
+        let mut xitu = DVector::zeros(dim_u);
+        b.tr_mul_to(&xiby, &mut xitu); // xitu = b.t xiby
+
+        let mut bt_wby = DMatrix::zeros(dim_u, dim_y);
+        b.tr_mul_to(&wby, &mut bt_wby);
+
+        let mut wtu = DMatrix::from_diagonal_element(dim_u, dim_u, T::default_epsilon()); // ensure wtx is positive definite
+        wtu.gemm(T::one(), &bt_wby, &b, T::one()); // wtx = a.t wby a
+        let rtu = wtu
+            .cholesky()
+            .with_context(|| format!("Cholesky decomposition failed"))?;
+
+        let mut mtu = xitu.clone();
+        rtu.solve_mut(&mut mtu); // wtu mtu = xitu
+
+        let mut vtu_bt_wby = bt_wby.clone();
+        rtu.solve_mut(&mut vtu_bt_wby);
+
+        let mut xibz = xiby.clone(); // xibz = xiby - wby b mtu
+        xibz.gemv_tr(T::one().neg(), &bt_wby, &mtu, T::one());
+
+        let mut wbz = wby.clone(); // wbz = wby - wby b vtu b.t wby
+        wbz.gemm_tr(T::one().neg(), &bt_wby, &vtu_bt_wby, T::one());
+
+        let msg = GaussianMessage {
+            keys: rem_keys,
+            a,
+            a_layout,
+            xiby: xibz,
+            wby: wbz,
+            closed_factors,
+        };
+
+        Ok(msg)
     }
 }
