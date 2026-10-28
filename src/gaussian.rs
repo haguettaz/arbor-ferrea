@@ -1,509 +1,620 @@
-//! Elimination trees for exact inference on Gaussian factor graphs.
-//!
-//! Implements two-pass message passing—upward filtering (variable elimination) and
-//! downward deciding (back-substitution)—over tree-structured Gaussian models.
-//!
-//! For theoretical background, refer to the
-//! [lecture notes](https://doi.org/10.3929/ethz-c-000785981)
-//! of the class *Model-Based Estimation and Signal Analysis*
-//! (Prof. H.-A. Loeliger, ETH Zürich, 2025).
+use std::collections::HashMap;
+use std::fmt::Debug;
 
-use anyhow::{Context, Result, ensure};
-use itertools::izip;
-use nalgebra::{DMatrix, DMatrixView, DVector, DVectorView, RealField};
-use std::collections::{HashMap, HashSet};
+use nalgebra::linalg::Cholesky;
+use nalgebra::{DMatrix, DMatrixView, DVector, RealField};
 
-use crate::core::*;
+use anyhow::{Context, Result, bail, ensure};
 
-#[derive(Debug, PartialEq)]
-pub struct GaussianFactor<T> {
-    id: usize,
-    keys: Vec<usize>,
-    // key_to_size: HashMap<usize, usize>,
-    a_vec: Vec<DMatrix<T>>,
-    // a: DMatrix<T>,
-    // layout: Vec<(usize, usize)>, // aligned with keys, indicate the location of the keys in the columns of a
-    xiby: DVector<T>,
-    wby: DMatrix<T>,
+#[derive(Debug)]
+pub struct Marginal<T: RealField> {
+    pub key: usize,
+    pub m: DVector<T>,
+    pub v: DMatrix<T>,
 }
 
-impl<T: RealField> GaussianFactor<T> {
-    /// Returns the layout of the variable.
-    // fn layout(&self, key: usize) -> Option<(usize, usize)> {
-    //     let idx = self.keys.iter().position(|&k| k == key)?;
-    //     self.layout.get(idx).copied()
-    // }
-    //
+impl<T: RealField> Marginal<T> {
+    pub fn from(
+        key: usize,
+        prior_or_none: Option<&Prior<T>>,
+        likelihood: &Likelihood<T>,
+    ) -> Result<Self> {
+        let dim_x = likelihood.dim_x();
 
-    pub fn key_to_pos(&self, key: usize) -> Option<usize> {
-        self.keys.iter().position(|&k| k == key)
+        let (mut xi, mut w) = match prior_or_none {
+            None => (DVector::zeros(dim_x), DMatrix::zeros(dim_x, dim_x)),
+            Some(prior) => {
+                ensure!(
+                    likelihood.keys() == prior.keys(),
+                    "prior and likelihood keys do not coincide"
+                );
+                ensure!(
+                    likelihood.dim_x() == prior.dim_x(),
+                    "prior and likelihood dimensions do not coincide"
+                );
+                (prior.xifx.clone(), prior.wfx.clone())
+            }
+        };
+        xi.gemv_tr(T::one(), &likelihood.a, &likelihood.xiby, T::one());
+        w.quadform(T::one(), &likelihood.wby, &likelihood.a, T::one());
+
+        let chol_w =
+            Cholesky::new(w)
+                .context(format!("Cholesky failed while computing the marginal. Consider adding dumb priors for variable with {key}"))?;
+
+        let m = chol_w.solve(&xi);
+        let v = chol_w.inverse();
+
+        Ok(Marginal { key, m, v })
+    }
+}
+
+pub struct Prior<T: RealField> {
+    pub key: usize,
+    pub xifx: DVector<T>,
+    pub wfx: DMatrix<T>,
+}
+
+impl<T: RealField> Prior<T> {
+    pub fn keys(&self) -> &[usize] {
+        std::slice::from_ref(&self.key)
+    }
+
+    pub fn has_key(&self, key: usize) -> bool {
+        self.key == key
+    }
+
+    pub fn dim_x(&self) -> usize {
+        self.xifx.nrows()
+    }
+}
+
+#[derive(Debug)]
+pub struct Likelihood<T: RealField> {
+    pub keys: Vec<usize>,
+    pub layout: Vec<(usize, usize)>,
+    pub a: DMatrix<T>,
+    pub xiby: DVector<T>,
+    pub wby: DMatrix<T>,
+}
+
+impl<T: RealField> Likelihood<T> {
+    pub fn keys(&self) -> &[usize] {
+        &self.keys
+    }
+
+    pub fn has_key(&self, key: usize) -> bool {
+        match self.keys.binary_search(&key) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
     }
 
     /// Returns a view on the block column of the variable `key`, or `None` if absent.
-    pub fn a_view(&self, key: usize) -> Option<DMatrixView<'_, T>> {
-        // self.layout(key)
-        //     .map(|(icol, ncols)| self.a.columns(icol, ncols))
-        self.key_to_pos(key).map(|idx| self.a_vec[idx].as_view())
-        // Some(self.a[idx].as_view())
+    pub fn a(&self, key: &usize) -> Option<DMatrixView<'_, T>> {
+        match self.keys.binary_search(key) {
+            Ok(i) => {
+                let (icol, ncols) = self.layout[i];
+                Some(self.a.columns(icol, ncols))
+            }
+            Err(_) => None,
+        }
     }
 
-    /// Returns a view on the observation weighted mean vector.
-    pub fn xiby_view(&self) -> DVectorView<'_, T> {
-        self.xiby.as_view()
+    pub fn layout(&self, key: &usize) -> Option<(usize, usize)> {
+        match self.keys.binary_search(key) {
+            Ok(i) => Some(self.layout[i]),
+            Err(_) => None,
+        }
     }
 
-    /// Returns a view on the observation precision matrix.
-    pub fn wby_view(&self) -> DMatrixView<'_, T> {
-        self.wby.as_view()
+    pub fn dim_x(&self) -> usize {
+        self.a.ncols()
     }
 
-    /// Returns the observation dimension.
     pub fn dim_y(&self) -> usize {
-        self.xiby.nrows()
+        self.a.nrows()
     }
 
-    // pub fn from() -> Result<GaussianFactor<T>> {}
-}
-
-impl<T> FactorBase for GaussianFactor<T> {
-    fn keys(&self) -> &[usize] {
-        &self.keys
-    }
-}
-
-impl<T: RealField> Factor for GaussianFactor<T> {
-    type TargetMessage = GaussianMessage<T>;
-    fn id(&self) -> usize {
-        self.id
-    }
-}
-
-// pub struct LinearModel<T> {
-//     keys: Vec<usize>,
-//     mats: Vec<DMatrix<T>>,
-// }
-//
-// impl<T> LinearModel<T> {
-//     pub fn rmult(&self, other: &DMatrixView<T>, on_keys: &[usize]) -> Result<DMatrixView<T>> {
-//         other * b
-//     }
-// }
-
-#[derive(Clone, Debug)]
-pub struct GaussianMessage<T> {
-    keys: Vec<usize>,
-    a_vec: Vec<DMatrix<T>>, // aligned with keys
-    // a_layout: Vec<(usize, usize)>, // aligned with keys
-    xiby: DVector<T>,
-    wby: DMatrix<T>,
-    closed_factors: Vec<usize>,
-}
-
-impl<T: RealField> GaussianMessage<T> {
-    // /// Returns the layout of the variable.
-    // fn layout(&self, key: usize) -> Option<(usize, usize)> {
-    //     let idx = self.keys.iter().position(|&k| k == key)?;
-    //     self.a_layout.get(idx).copied()
-    // }
-    pub fn key_to_pos(&self, key: usize) -> Option<usize> {
-        self.keys.iter().position(|&k| k == key)
-    }
-
-    /// Returns a view on the matrix associated with the variable `key`, or `None` if absent.
-    pub fn a_view(&self, key: usize) -> Option<DMatrixView<'_, T>> {
-        self.key_to_pos(key).map(|idx| self.a_vec[idx].as_view())
-        // self.layout(key)
-        //     .map(|(icol, ncols)| self.a.columns(icol, ncols))
-    }
-
-    /// Create a new Gaussian message by aggregating observation models and prior models and eliminating some variables.
-    pub fn from<C>(
-        obs_models: &[&GaussianObservation<T>],
-        prior_models: &[Option<&GaussianPrior<T>>],
-        keys: &[usize],
-        on_keys: &[usize],
-        closed_factors: &[usize],
-        size_ctx: C,
-    ) -> Result<GaussianMessage<T>>
+    /// Create a new  likelihood by aggregating observation models and prior models and eliminating some variables.
+    /// It is the caller responsability to check that the kept and cleared keys are compatible and valid with factors.
+    /// This is equivalent to max-product and sum-product message passing for closing box.
+    /// Warning: for performance reason, priors on kept variables are forbidden.
+    /// Warning: if necessary, a weak Gaussian prior on eliminated variables is added (Tikhonov regularization)
+    /// while computing the Cholesky decomposition.
+    pub fn from_closure<'a, C>(
+        factors: &[FactorRef<T>],
+        kept_keys: &[usize],
+        cleared_keys: &[usize],
+        ctx: C,
+    ) -> Result<Likelihood<T>>
     where
         C: Fn(usize) -> usize,
     {
-        let dim_u = on_keys.iter().map(|&key| size_ctx(key)).sum();
-        let dim_y = obs_models.iter().map(|&obs_model| obs_model.dim_y()).sum();
+        debug_assert!(cleared_keys.is_sorted(), "unsorted cleared keys");
+        debug_assert!(kept_keys.is_sorted(), "unsorted kept keys");
 
-        // Allocate temporary matrices and vectors
+        for f in factors.iter() {
+            match f {
+                FactorRef::Likelihood(likelihood) => {
+                    for key in &likelihood.keys {
+                        match (
+                            kept_keys.binary_search(&key),
+                            cleared_keys.binary_search(&key),
+                        ) {
+                            (Err(_), Err(_)) => bail!("Likelihood key {} does not exist.", key),
+                            _ => (),
+                        }
+                    }
+                }
+                FactorRef::Prior(prior) => {
+                    let key = prior.key;
+                    match (
+                        kept_keys.binary_search(&key),
+                        cleared_keys.binary_search(&key),
+                    ) {
+                        (Ok(_), _) => bail!("Prior on a kept key is forbidden."),
+                        (Err(_), Err(_)) => bail!("Prior key {} does not exist.", key),
+                        _ => (),
+                    }
+                }
+            }
+        }
+
+        // Setup dimensions and layout context
+        let mut kept_layout: Vec<(usize, usize)> = Vec::with_capacity(kept_keys.len());
+        let mut offset = 0;
+        for key in kept_keys {
+            let size = ctx(*key);
+            kept_layout.push((offset, size));
+            offset += size;
+        }
+        let kept_layout_ctx = |key| match kept_keys.binary_search(key) {
+            Ok(i) => Some(kept_layout[i]),
+            Err(_) => None,
+        };
+        let dim_x = offset;
+
+        let mut cleared_layout: Vec<(usize, usize)> = Vec::with_capacity(cleared_keys.len());
+        let mut offset = 0;
+        for key in cleared_keys {
+            let size = ctx(*key);
+            cleared_layout.push((offset, size));
+            offset += size;
+        }
+        let cleared_layout_ctx = |key| match cleared_keys.binary_search(key) {
+            Ok(i) => Some(cleared_layout[i]),
+            Err(_) => None,
+        };
+        let dim_u = offset;
+
+        let dim_y = factors
+            .iter()
+            .map(|f| match f {
+                FactorRef::Likelihood(likelihood) => likelihood.dim_y(),
+                FactorRef::Prior(_) => 0,
+            })
+            .sum();
+
+        let mut a = DMatrix::zeros(dim_y, dim_x);
+        let mut xiby = DVector::zeros(dim_y);
+        let mut wby = DMatrix::zeros(dim_y, dim_y);
+        let mut bt_wby = DMatrix::zeros(dim_u, dim_y);
         let mut xifu_plus_bt_xiby = DVector::zeros(dim_u);
         let mut wfu_plus_bt_wby_b = DMatrix::zeros(dim_u, dim_u);
 
-        // Load data from the prior models
-        let mut pos_key = 0;
-        for (key, prior_model) in izip!(on_keys.iter(), prior_models.iter()) {
-            let size_key = size_ctx(*key);
-            if let Some(prior) = prior_model {
-                let xifu = prior.xifx_view();
-                xifu_plus_bt_xiby
-                    .rows_mut(pos_key, size_key)
-                    .copy_from(xifu);
-
-                let wfu = prior.wfx_view();
-                wfu_plus_bt_wby_b
-                    .view_mut((pos_key, pos_key), (size_key, size_key))
-                    .copy_from(wfu);
-            }
-            pos_key += size_key;
-        }
-
-        // Collect the matrices of remaining variables
-        let mut a_vec = Vec::with_capacity(keys.len());
-        let (mut pos_obs, mut pos_key) = (0, 0);
-        for key in keys.iter() {
-            let size_key = size_ctx(*key);
-            let mut a_key = DMatrix::zeros(dim_y, size_key);
-            pos_obs = 0;
-            for obs_model in obs_models.iter() {
-                let size_obs = obs_model.dim_y();
-                if let Some(a) = obs_model.a_view(key) {
-                    a_key.rows_mut(pos_obs, size_obs).copy_from(a);
-                }
-                pos_obs += size_obs;
-            }
-            pos_key += size_key;
-            a_vec.push(a_key);
-        }
-
-        // Load xiby from observation models
-        let mut xiby = DVector::zeros(dim_y);
-        let mut pos_obs = 0;
-        for obs_model in obs_models.iter() {
-            let size_obs = obs_model.dim_y();
-            xiby.rows_mut(pos_obs, size_obs)
-                .copy_from(obs_model.xiby_view());
-            pos_obs += size_obs;
-        }
-
-        // Load wby_b from observation models
-        let mut wby_b = DMatrix::zeros(dim_y, dim_u);
-        let (mut pos_obs, mut pos_key) = (0, 0);
-        for key in on_keys.iter() {
-            let size_key = size_ctx(*key);
-            pos_obs = 0;
-            for obs_model in obs_models.iter() {
-                let size_obs = obs_model.dim_y();
-                if let Some(b) = obs_model.a_view(key) {
-                    wby_b
-                        .view_mut((pos_obs, pos_key), (size_obs, size_key))
-                        .gemm(T::one(), obs_model.wby_view(), b, T::one());
-                }
-                pos_obs += size_obs;
-            }
-            pos_key += size_key;
-        }
-
-        // Add bt_xiby to allocated xifu_plus_bt_xiby already containing xifu
-        // Add bt_wby_b to allocated wfu_plus_bt_wby_b already containing wfu
-        let mut pos_key = 0;
-        for key in on_keys.iter() {
-            let size_key = size_ctx(*key);
-            pos_obs = 0;
-            for obs_model in obs_models.iter() {
-                let size_obs = obs_model.dim_y();
-                if let Some(b) = obs_model.a_view(key) {
-                    xifu_plus_bt_xiby.rows_mut(pos_key, size_key).gemm_tr(
-                        T::one(),
-                        b,
-                        &wby_b.rows(pos_obs, size_obs),
-                        T::one(),
-                    );
-                    wfu_plus_bt_wby_b.rows_mut(pos_key, size_key).gemm_tr(
-                        T::one(),
-                        b,
-                        &wby_b.rows(pos_obs, size_obs),
-                        T::one(),
-                    );
-                }
-                pos_obs += size_obs;
-            }
-            pos_key += size_key;
-        }
-
-        // Solve ( wfu + bt * wby * b ) * h = bt * wby via Cholesky decomposition
-        let chol_wfu_plus_bt_wby_b = wfu_plus_bt_wby_b
-            .cholesky()
-            .with_context(|| format!("Cholesky decomposition failed"))?;
-
-        let bt_wby = wby_b.transpose();
-        let h = chol_wfu_plus_bt_wby_b.solve(&wby_b.transpose());
-
-        // Compute:
-        //  xibz = xiby - ht (xifu + bt xiby)
-        //  wby = wby - ht bt wby
-        let mut xibz = DVector::zeros(dim_y);
-        let mut wbz = DMatrix::zeros(dim_y, dim_y);
-        let mut pos_obs = 0;
-        for obs_model in obs_models.iter() {
-            let size_obs = obs_model.dim_y();
-            xibz.rows_mut(pos_obs, size_obs)
-                .copy_from(obs_model.xiby_view());
-            wbz.view_mut((pos_obs, pos_obs), (size_obs, size_obs))
-                .copy_from(obs_model.wby_view());
-            pos_obs += size_obs;
-        }
-        xibz.gemm_tr(T::one().neg(), &h, &xifu_plus_bt_xiby, T::one());
-        wbz.gemm_tr(T::one().neg(), &h, &bt_wby, T::one());
-
-        let msg = GaussianMessage {
-            keys: keys.to_vec(),
-            a_vec,
-            xiby: xibz,
-            wby: wbz,
-            closed_factors: closed_factors.to_vec(),
-        };
-        Ok(msg)
-    }
-
-    /// Returns a view on the observation weighted mean vector.
-    pub fn xiby_view(&self) -> DVectorView<'_, T> {
-        self.xiby.as_view()
-    }
-
-    /// Returns a view on the observation precision matrix.
-    pub fn wby_view(&self) -> DMatrixView<'_, T> {
-        self.wby.as_view()
-    }
-
-    /// Returns the observation dimension.
-    pub fn dim_y(&self) -> usize {
-        self.xiby.nrows()
-    }
-}
-
-// Base implementation for Message
-impl<T> FactorBase for GaussianMessage<T> {
-    fn keys(&self) -> &[usize] {
-        &self.keys
-    }
-}
-
-// // Forward FactorBase methods through the enum
-// impl<T> FactorBase for GaussianFactor<T> {
-//     fn keys(&self) -> &[usize] {
-//         match self {
-//             Self::Prior(prior) => prior.keys(),
-//             Self::Observation(obs) => obs.keys(),
-//         }
-//     }
-// }
-//
-// // Forward Factor methods through the enum
-// impl<T: RealField> Factor for GaussianFactor<T> {
-//     type TargetMessage = GaussianMessage<T>;
-//
-//     fn id(&self) -> usize {
-//         match self {
-//             Self::Prior(prior) => prior.id(),
-//             Self::Observation(obs) => obs.id(),
-//         }
-//     }
-// }
-
-impl<T: RealField> Message for GaussianMessage<T> {
-    type TargetFactor = GaussianFactor<T>;
-
-    fn closed_factors(&self) -> &[usize] {
-        &self.closed_factors
-    }
-
-    fn close<'a, I, K, C>(factors: I, on_keys: K, ctx: C) -> Result<Self>
-    where
-        I: IntoIterator<Item = AnyFactor<'a, Self::TargetFactor>>,
-        K: IntoIterator<Item = usize>,
-        C: Fn(usize) -> usize,
-        Self::TargetFactor: 'a,
-    {
-        let factors: Vec<_> = factors.into_iter().collect();
-        let on_keys: HashSet<usize> = on_keys.into_iter().collect();
-        let mut rem_keys = HashSet::new();
-
-        let mut closed_factors = Vec::new();
-
-        // Aggregate all keys and track which factors/messages are being closed
-        for factor in &factors {
-            for &key in factor.keys() {
-                rem_keys.insert(key);
-            }
-
-            match factor {
-                AnyFactor::BorrowedFactor(fct) => {
-                    closed_factors.push(fct.id());
-                }
-
-                AnyFactor::OwnedMessage(msg) => {
-                    closed_factors.extend_from_slice(msg.closed_factors());
-                }
-            }
-        }
-
-        // Remove the keys to eliminate
-        for key in &on_keys {
-            rem_keys.remove(key);
-        }
-        let mut rem_keys: Vec<usize> = rem_keys.into_iter().collect();
-        rem_keys.sort_unstable();
-        let mut on_keys: Vec<usize> = on_keys.into_iter().collect();
-        on_keys.sort_unstable();
-
-        // Compute the dimension of the observation (aggregated overall factors)
-        let mut dim_y = 0;
-        for factor in &factors {
-            match factor {
-                AnyFactor::BorrowedFactor(fct) => {
-                    dim_y += fct.dim_y();
-                }
-
-                AnyFactor::OwnedMessage(msg) => {
-                    closed_factors.extend_from_slice(msg.closed_factors());
-                    dim_y += msg.dim_y();
-                }
-            }
-        }
-
-        let mut a_layout = Vec::with_capacity(rem_keys.len());
-        let mut icol = 0;
-        for &key in &rem_keys {
-            let ncols = ctx(key);
-            a_layout.push((icol, ncols));
-            icol += ncols;
-        }
-        let dim_x = icol;
-        let mut a = DMatrix::zeros(dim_y, dim_x);
-
-        let mut b_layout = Vec::with_capacity(on_keys.len());
-        let mut col = 0;
-        for &key in &on_keys {
-            let ncols = ctx(key);
-            b_layout.push((col, ncols));
-            col += ncols;
-        }
-        let dim_u = col;
-        let mut b = DMatrix::zeros(dim_y, dim_u);
-
-        // Initialize the observations and associated precisions
-        let mut xiby = DVector::zeros(dim_y);
-        let mut wby = DMatrix::zeros(dim_y, dim_y);
-
+        // rows = observations and columns = keys
         let mut irow = 0;
-        for factor in factors {
-            match factor {
-                AnyFactor::BorrowedFactor(fct) => {
-                    let nrows = fct.dim_y();
+        for f in factors.iter() {
+            match f {
+                FactorRef::Prior(prior) => {
+                    let (icol, ncols) = cleared_layout_ctx(&prior.key).with_context(|| {
+                        format!("Key {} not found in cleared_layout_ctx", prior.key)
+                    })?;
 
-                    // Fill the matrix A related to the remaining variables
-                    for (key, (icol, ncols)) in izip!(rem_keys.iter(), a_layout.iter()) {
-                        if let Some(mat) = fct.a_view(*key) {
-                            ensure!(
-                                mat.ncols() == *ncols,
-                                "Factor block for variable {} has {} columns, expected {}",
-                                key,
-                                mat.ncols(),
-                                ncols
-                            );
-                            a.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
-                        }
-                    }
+                    let mut tmp = xifu_plus_bt_xiby.rows_mut(icol, ncols);
+                    tmp += &prior.xifx;
 
-                    // Fill the matrix B related to the eliminated variables
-                    for (key, (icol, ncols)) in izip!(on_keys.iter(), b_layout.iter()) {
-                        if let Some(mat) = fct.a_view(*key) {
-                            ensure!(
-                                mat.ncols() == *ncols,
-                                "Factor block for variable {} has {} columns, expected {}",
-                                key,
-                                mat.ncols(),
-                                ncols
-                            );
-                            b.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
-                        }
-                    }
-
-                    // Fill the observation and precisions
-                    xiby.rows_mut(irow, nrows).copy_from(&fct.xiby_view());
-                    wby.view_mut((irow, irow), (nrows, nrows))
-                        .copy_from(&fct.wby_view());
-                    irow += nrows;
+                    let mut tmp = wfu_plus_bt_wby_b.view_mut((icol, icol), (ncols, ncols));
+                    tmp += &prior.wfx;
                 }
-                AnyFactor::OwnedMessage(msg) => {
-                    let nrows = msg.dim_y();
+                FactorRef::Likelihood(likelihood) => {
+                    let nrows = likelihood.dim_y();
 
-                    // Fill the matrix A related to the remaining variables
-                    for (key, (icol, ncols)) in izip!(rem_keys.iter(), a_layout.iter()) {
-                        if let Some(mat) = msg.a_view(*key) {
-                            ensure!(
-                                mat.ncols() == *ncols,
-                                "Factor block for variable {} has {} columns, expected {}",
-                                key,
-                                mat.ncols(),
-                                ncols
-                            );
-                            a.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
+                    // update xiby and wbz
+                    let mut tmp = xiby.rows_mut(irow, nrows);
+                    tmp.copy_from(&likelihood.xiby);
+                    let mut tmp = wby.view_mut((irow, irow), (nrows, nrows));
+                    tmp.copy_from(&likelihood.wby);
+
+                    // update a (related to kept keys)
+                    for key in kept_keys {
+                        if let Some(a_view) = likelihood.a(key) {
+                            let (icol, ncols) = kept_layout_ctx(&key).with_context(|| {
+                                format!("Key {} not found in kept_layout_ctx", key)
+                            })?;
+                            a.view_mut((irow, icol), (nrows, ncols)).copy_from(&a_view);
                         }
                     }
 
-                    // Fill the matrix B related to the eliminated variables
-                    for (key, (icol, ncols)) in izip!(on_keys.iter(), b_layout.iter()) {
-                        if let Some(mat) = msg.a_view(*key) {
-                            ensure!(
-                                mat.ncols() == *ncols,
-                                "Factor block for variable {} has {} columns, expected {}",
-                                key,
-                                mat.ncols(),
-                                ncols
-                            );
-                            b.view_mut((irow, *icol), (nrows, *ncols)).copy_from(&mat);
+                    // update wby_b, xifu_plus_bt_xiby, and wfu_plus_bt_wby_b (related to cleared keys)
+                    for key in cleared_keys.iter() {
+                        if let Some(b_view) = likelihood.a(key) {
+                            let (icol, ncols) = cleared_layout_ctx(&key).with_context(|| {
+                                format!("Key {} not found in cleared_layout_ctx", key)
+                            })?;
+
+                            // update bt_wby (implicitly transposed)
+                            let mut tmp = bt_wby.view_mut((icol, irow), (ncols, nrows));
+                            tmp.gemm_tr(T::one(), &b_view, &likelihood.wby, T::one());
+
+                            // update xifu_plus_bt_xiby
+                            let mut tmp = xifu_plus_bt_xiby.rows_mut(icol, ncols);
+                            tmp.gemv_tr(T::one(), &b_view, &likelihood.xiby, T::one());
+
+                            // update wfu_plus_bt_wby_b
+                            let mut tmp = wfu_plus_bt_wby_b.view_mut((icol, icol), (ncols, ncols));
+                            tmp.quadform(T::one(), &likelihood.wby, &b_view, T::one());
                         }
                     }
 
-                    // Fill the observation and precisions
-                    xiby.rows_mut(irow, nrows).copy_from(&msg.xiby_view());
-                    wby.view_mut((irow, irow), (nrows, nrows))
-                        .copy_from(&msg.wby_view());
                     irow += nrows;
                 }
             }
         }
 
-        let mut xitu = DVector::zeros(dim_u);
-        b.tr_mul_to(&xiby, &mut xitu); // xitu = b.t xiby
+        let chol_wfu_plus_bt_wby_b =
+            // Cholesky::new_with_substitute(wfu_plus_bt_wby_b, T::default_epsilon()) chol_wfu_plus_bt_wby_b: no copy
+            Cholesky::new(wfu_plus_bt_wby_b)
+                .context(format!("Cholesky failed: cleared variables are under-constrained. Consider adding dumb priors for variables {:?}", cleared_keys))?;
+        let l = chol_wfu_plus_bt_wby_b.l_dirty();
+        let mut g = bt_wby;
+        let mut h = xifu_plus_bt_xiby;
+        ensure!(
+            l.solve_lower_triangular_mut(&mut g) && l.solve_lower_triangular_mut(&mut h),
+            "Singular factor in elimination"
+        );
+        xiby.gemv_tr(-T::one(), &g, &h, T::one());
+        wby.gemm_tr(-T::one(), &g, &g, T::one());
 
-        let mut bt_wby = DMatrix::zeros(dim_u, dim_y);
-        b.tr_mul_to(&wby, &mut bt_wby);
-
-        let mut wtu = DMatrix::from_diagonal_element(dim_u, dim_u, T::default_epsilon()); // ensure wtx is positive definite
-        wtu.gemm(T::one(), &bt_wby, &b, T::one()); // wtx = a.t wby a
-        let rtu = wtu
-            .cholesky()
-            .with_context(|| format!("Cholesky decomposition failed"))?;
-
-        let mut mtu = xitu.clone();
-        rtu.solve_mut(&mut mtu); // wtu mtu = xitu
-
-        let mut vtu_bt_wby = bt_wby.clone();
-        rtu.solve_mut(&mut vtu_bt_wby);
-
-        let mut xibz = xiby.clone(); // xibz = xiby - wby b mtu
-        xibz.gemv_tr(T::one().neg(), &bt_wby, &mtu, T::one());
-
-        let mut wbz = wby.clone(); // wbz = wby - wby b vtu b.t wby
-        wbz.gemm_tr(T::one().neg(), &bt_wby, &vtu_bt_wby, T::one());
-
-        let msg = GaussianMessage {
-            keys: rem_keys,
+        Ok(Likelihood {
+            keys: Vec::from(kept_keys),
+            layout: kept_layout,
             a,
-            a_layout,
-            xiby: xibz,
-            wby: wbz,
-            closed_factors,
-        };
+            xiby,
+            wby,
+        })
+    }
+}
 
-        Ok(msg)
+pub enum Factor<T: RealField> {
+    Prior(Prior<T>),
+    Likelihood(Likelihood<T>),
+}
+
+impl<T: RealField> Factor<T> {
+    pub fn keys(&self) -> &[usize] {
+        match self {
+            Self::Prior(f) => f.keys(),
+            Self::Likelihood(f) => f.keys(),
+        }
+    }
+
+    pub fn has_key(&self, key: usize) -> bool {
+        match self {
+            Self::Prior(f) => f.has_key(key),
+            Self::Likelihood(f) => f.has_key(key),
+        }
+    }
+}
+
+pub enum FactorRef<'a, T: RealField> {
+    Prior(&'a Prior<T>),
+    Likelihood(&'a Likelihood<T>),
+}
+
+impl<'a, T: RealField> FactorRef<'a, T> {
+    pub fn keys(&self) -> &[usize] {
+        match self {
+            Self::Prior(f) => f.keys(),
+            Self::Likelihood(f) => f.keys(),
+        }
+    }
+
+    pub fn has_key(&self, key: usize) -> bool {
+        match self {
+            Self::Prior(f) => f.has_key(key),
+            Self::Likelihood(f) => f.has_key(key),
+        }
+    }
+}
+
+/// Variable symbol
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Symbol(pub char, pub usize);
+
+pub struct FactorGraph<T: RealField> {
+    factors: Vec<Factor<T>>,
+    key_to_symbol: Vec<Symbol>,
+    key_to_size: Vec<usize>,
+    symbol_to_key: HashMap<Symbol, usize>,
+}
+
+impl<T: RealField> FactorGraph<T> {
+    pub fn new() -> Self {
+        Self {
+            factors: Vec::new(),
+            key_to_symbol: Vec::new(),
+            key_to_size: Vec::new(),
+            symbol_to_key: HashMap::new(),
+        }
+    }
+
+    pub fn n_keys(&self) -> usize {
+        self.key_to_symbol.len()
+    }
+
+    pub fn keys(&self) -> impl DoubleEndedIterator<Item = usize> {
+        0..self.key_to_symbol.len()
+    }
+
+    pub fn key(&self, symbol: &Symbol) -> Option<usize> {
+        self.symbol_to_key.get(symbol).copied()
+    }
+
+    pub fn has_key(&self, key: usize) -> bool {
+        key < self.key_to_symbol.len()
+    }
+
+    pub fn symbol(&self, key: usize) -> Option<&Symbol> {
+        self.key_to_symbol.get(key)
+    }
+
+    pub fn size(&self, key: usize) -> Option<usize> {
+        self.key_to_size.get(key).copied()
+    }
+
+    pub fn n_factors(&self) -> usize {
+        self.factors.len()
+    }
+
+    pub fn factors(&self) -> &[Factor<T>] {
+        &self.factors
+    }
+
+    pub fn factor(&self, i: usize) -> Option<&Factor<T>> {
+        self.factors.get(i)
+    }
+
+    pub fn add_variable(&mut self, symbol: Symbol, size: usize) -> Result<usize> {
+        if let Some(_) = self.symbol_to_key.get(&symbol) {
+            bail!("Variable {:?} has already been registered.", symbol)
+        }
+
+        let id = self.key_to_symbol.len();
+        self.symbol_to_key.insert(symbol, id);
+        self.key_to_symbol.push(symbol);
+        self.key_to_size.push(size);
+        Ok(id)
+    }
+
+    pub fn add_prior(&mut self, key: usize, mfx: DVector<T>, wfx: DMatrix<T>) -> Result<usize> {
+        ensure!(
+            self.has_key(key),
+            "The provided prior concerns a variable that has not been registered yet.",
+        );
+
+        let dim_x = self
+            .size(key)
+            .with_context(|| format!("Size of {} not found in factor graph context.", key))?;
+
+        ensure!(
+            (mfx.nrows() == dim_x),
+            format!(
+                "Expected mean vector to have shape ({}, ), got ({}, ).",
+                dim_x,
+                mfx.nrows(),
+            )
+        );
+        ensure!(
+            (wfx.nrows() == dim_x) && (wfx.ncols() == dim_x),
+            format!(
+                "Expected precision matrix to have shape ({}, {}), got ({}, {}).",
+                dim_x,
+                dim_x,
+                wfx.nrows(),
+                wfx.ncols(),
+            )
+        );
+
+        let id = self.factors().len();
+
+        let xifx = &wfx * &mfx;
+        self.factors.push(Factor::Prior(Prior { key, xifx, wfx }));
+
+        Ok(id)
+    }
+
+    pub fn add_observation(
+        &mut self,
+        keys: Vec<usize>,
+        a: DMatrix<T>,
+        mby: DVector<T>,
+        wby: DMatrix<T>,
+    ) -> Result<usize> {
+        ensure!(keys.is_sorted(), "Keys must be sorted.");
+        ensure!(
+            keys.iter().all(|&key| self.has_key(key)),
+            "The provided observation concerns variables that have not been registered yet.",
+        );
+
+        let mut offset = 0;
+        let mut layout = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let size = self
+                .size(*key)
+                .with_context(|| format!("Size of {} not found in factor graph context.", key))?;
+            layout.push((offset, size));
+            offset += size;
+        }
+        let dim_x = offset;
+
+        let dim_y = mby.nrows();
+
+        // check wby shape
+        ensure!(
+            (wby.nrows() == dim_y) && (wby.ncols() == dim_y),
+            format!(
+                "Expected precision matrix to have shape ({}, {}), got ({}, {}).",
+                dim_y,
+                dim_y,
+                wby.nrows(),
+                wby.ncols(),
+            )
+        );
+
+        // check a shape
+        ensure!(
+            (a.nrows() == dim_y) && (a.ncols() == dim_x),
+            format!(
+                "Expected A matrix to have shape ({}, {}), got ({}, {}).",
+                dim_y,
+                dim_x,
+                a.nrows(),
+                a.ncols(),
+            )
+        );
+
+        let id = self.factors.len();
+
+        let xiby = &wby * &mby;
+        self.factors.push(Factor::Likelihood(Likelihood {
+            keys,
+            layout,
+            a,
+            xiby,
+            wby,
+        }));
+
+        Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const X1: Symbol = Symbol('x', 1);
+    const X2: Symbol = Symbol('x', 2);
+    const X3: Symbol = Symbol('x', 3);
+    const X42: Symbol = Symbol('x', 42);
+
+    #[test]
+    fn test_factor_graph() {
+        let mut factor_graph = FactorGraph::new();
+
+        let x1 = factor_graph
+            .add_variable(X1, 1)
+            .expect("Adding a new variable must work.");
+        let x2 = factor_graph
+            .add_variable(X2, 3)
+            .expect("Adding a new 3-dimensional variable must also work.");
+        let x3 = factor_graph
+            .add_variable(X3, 1_000_000)
+            .expect("Adding a new, very high-dimension variable must also work.");
+        let _ = factor_graph
+            .add_variable(X2, 3)
+            .expect_err("Adding an already registered variable must fail.");
+        let not_registered_x42 = 42; // a not registered variable
+
+        assert_eq!(
+            factor_graph.n_keys(),
+            3,
+            "The factor graph has three registered variables: x1, x2, and x3"
+        );
+
+        let symbolx1 = factor_graph.symbol(x1);
+        assert_eq!(
+            symbolx1,
+            Some(&X1),
+            "A registered variable has an accessible symbol."
+        );
+        let not_registered_symbol = factor_graph.symbol(not_registered_x42);
+        assert_eq!(
+            not_registered_symbol, None,
+            "A non-registered variable has no symbol."
+        );
+
+        let x2_from_its_symbol = factor_graph.key(&X2);
+        assert_eq!(
+            x2_from_its_symbol,
+            Some(x2),
+            "A registered variable can be accessed via its symbol."
+        );
+        let x42_from_its_symbol = factor_graph.key(&X42);
+        assert_eq!(
+            x42_from_its_symbol, None,
+            "A non-registered variable cannot be accessed via its symbol."
+        );
+
+        let sizex3 = factor_graph.size(x3);
+        assert_eq!(
+            sizex3,
+            Some(1_000_000),
+            "The size of a registered variable is accessible from its key."
+        );
+        let size_not_registered_x42 = factor_graph.size(not_registered_x42);
+        assert_eq!(
+            size_not_registered_x42, None,
+            "The size of a non-registered variable is not accessible."
+        );
+
+        factor_graph
+            .add_prior(x1, DVector::zeros(1), DMatrix::identity(1, 1))
+            .expect("Adding a prior on a registered variable must work.");
+        factor_graph
+            .add_prior(x2, DVector::zeros(2), DMatrix::identity(3, 3))
+            .expect_err("Adding a prior with incorrect dimensions must fail.");
+        factor_graph
+            .add_prior(x2, DVector::zeros(3), DMatrix::identity(3, 2))
+            .expect_err("Adding a prior with incorrect dimensions must fail.");
+        factor_graph
+            .add_prior(
+                not_registered_x42,
+                DVector::zeros(2),
+                DMatrix::identity(2, 2),
+            )
+            .expect_err("Adding a prior on a non-registered variable must fail.");
+
+        factor_graph
+            .add_observation(
+                vec![x1, x2],
+                DMatrix::from_element(2, 4, 1.0),
+                DVector::zeros(2),
+                DMatrix::identity(2, 2),
+            )
+            .expect("Adding a relation between registered variables must work.");
+        factor_graph
+            .add_observation(
+                vec![x2, x1],
+                DMatrix::from_element(2, 4, 1.0),
+                DVector::zeros(2),
+                DMatrix::identity(2, 2),
+            )
+            .expect_err("Adding an observation with unsorted keys must fail.");
+        factor_graph
+            .add_observation(
+                vec![x1, x2, not_registered_x42],
+                DMatrix::from_element(3, 5, 1.0),
+                DVector::zeros(3),
+                DMatrix::identity(3, 3),
+            )
+            .expect_err("Adding an observation with unregistered variables must fail.");
+
+        assert_eq!(
+            factor_graph.n_factors(),
+            2,
+            "There should be 2 factors in total: 1 prior and 1 likelihood."
+        );
     }
 }
