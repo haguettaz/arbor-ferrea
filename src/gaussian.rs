@@ -49,6 +49,7 @@ impl<T: RealField> Marginal<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct Prior<T: RealField> {
     pub key: usize,
     pub xifx: DVector<T>,
@@ -199,13 +200,14 @@ impl<T: RealField> Likelihood<T> {
         let mut a = DMatrix::zeros(dim_y, dim_x);
         let mut xiby = DVector::zeros(dim_y);
         let mut wby = DMatrix::zeros(dim_y, dim_y);
-        let mut bt_wby = DMatrix::zeros(dim_u, dim_y);
+        let mut wby_b = DMatrix::zeros(dim_y, dim_u);
+        // let mut bt_wby = DMatrix::zeros(dim_u, dim_y);
         let mut xifu_plus_bt_xiby = DVector::zeros(dim_u);
         let mut wfu_plus_bt_wby_b = DMatrix::zeros(dim_u, dim_u);
 
         // rows = observations and columns = keys
-        let mut irow = 0;
-        for f in factors.iter() {
+        let mut ypos = 0;
+        for f in factors {
             match f {
                 FactorRef::Prior(prior) => {
                     let (icol, ncols) = cleared_layout_ctx(&prior.key).with_context(|| {
@@ -219,12 +221,12 @@ impl<T: RealField> Likelihood<T> {
                     tmp += &prior.wfx;
                 }
                 FactorRef::Likelihood(likelihood) => {
-                    let nrows = likelihood.dim_y();
+                    let ysize = likelihood.dim_y();
 
-                    // update xiby and wbz
-                    let mut tmp = xiby.rows_mut(irow, nrows);
+                    // update xiby and wby
+                    let mut tmp = xiby.rows_mut(ypos, ysize);
                     tmp.copy_from(&likelihood.xiby);
-                    let mut tmp = wby.view_mut((irow, irow), (nrows, nrows));
+                    let mut tmp = wby.view_mut((ypos, ypos), (ysize, ysize));
                     tmp.copy_from(&likelihood.wby);
 
                     // update a (related to kept keys)
@@ -233,42 +235,56 @@ impl<T: RealField> Likelihood<T> {
                             let (icol, ncols) = kept_layout_ctx(&key).with_context(|| {
                                 format!("Key {} not found in kept_layout_ctx", key)
                             })?;
-                            a.view_mut((irow, icol), (nrows, ncols)).copy_from(&a_view);
+                            a.view_mut((ypos, icol), (ysize, ncols)).copy_from(&a_view);
                         }
                     }
 
                     // update wby_b, xifu_plus_bt_xiby, and wfu_plus_bt_wby_b (related to cleared keys)
-                    for key in cleared_keys.iter() {
-                        if let Some(b_view) = likelihood.a(key) {
-                            let (icol, ncols) = cleared_layout_ctx(&key).with_context(|| {
-                                format!("Key {} not found in cleared_layout_ctx", key)
+                    for ukey in cleared_keys {
+                        if let Some(ub) = likelihood.a(ukey) {
+                            let (upos, usize) = cleared_layout_ctx(&ukey).with_context(|| {
+                                format!("Key {} not found in cleared_layout_ctx", ukey)
                             })?;
 
-                            // update bt_wby (implicitly transposed)
-                            let mut tmp = bt_wby.view_mut((icol, irow), (ncols, nrows));
-                            tmp.gemm_tr(T::one(), &b_view, &likelihood.wby, T::one());
+                            // update wby_b
+                            let mut wby_ub = wby_b.view_mut((ypos, upos), (ysize, usize));
+                            wby_ub.gemm(T::one(), &likelihood.wby, &ub, T::one());
+
+                            // update wfu_plus_bt_wby_b (only the lower triangular part)
+                            for vkey in cleared_keys {
+                                if vkey >= ukey {
+                                    if let Some(vb) = likelihood.a(vkey) {
+                                        let (vpos, vsize) = cleared_layout_ctx(&vkey)
+                                            .with_context(|| {
+                                                format!(
+                                                    "Key {} not found in cleared_layout_ctx",
+                                                    vkey
+                                                )
+                                            })?;
+
+                                        let mut tmp = wfu_plus_bt_wby_b
+                                            .view_mut((vpos, upos), (vsize, usize));
+                                        tmp.gemm_tr(T::one(), &vb, &wby_ub, T::one());
+                                    }
+                                }
+                            }
 
                             // update xifu_plus_bt_xiby
-                            let mut tmp = xifu_plus_bt_xiby.rows_mut(icol, ncols);
-                            tmp.gemv_tr(T::one(), &b_view, &likelihood.xiby, T::one());
-
-                            // update wfu_plus_bt_wby_b
-                            let mut tmp = wfu_plus_bt_wby_b.view_mut((icol, icol), (ncols, ncols));
-                            tmp.quadform(T::one(), &likelihood.wby, &b_view, T::one());
+                            let mut tmp = xifu_plus_bt_xiby.rows_mut(upos, usize);
+                            tmp.gemv_tr(T::one(), &ub, &likelihood.xiby, T::one());
                         }
                     }
 
-                    irow += nrows;
+                    ypos += ysize;
                 }
             }
         }
 
         let chol_wfu_plus_bt_wby_b =
-            // Cholesky::new_with_substitute(wfu_plus_bt_wby_b, T::default_epsilon()) chol_wfu_plus_bt_wby_b: no copy
             Cholesky::new(wfu_plus_bt_wby_b)
                 .context(format!("Cholesky failed: cleared variables are under-constrained. Consider adding dumb priors for variables {:?}", cleared_keys))?;
         let l = chol_wfu_plus_bt_wby_b.l_dirty();
-        let mut g = bt_wby;
+        let mut g = wby_b.transpose();
         let mut h = xifu_plus_bt_xiby;
         ensure!(
             l.solve_lower_triangular_mut(&mut g) && l.solve_lower_triangular_mut(&mut h),
@@ -503,6 +519,7 @@ impl<T: RealField> FactorGraph<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::{dmatrix, dvector};
 
     const X1: Symbol = Symbol('x', 1);
     const X2: Symbol = Symbol('x', 2);
@@ -616,5 +633,135 @@ mod tests {
             2,
             "There should be 2 factors in total: 1 prior and 1 likelihood."
         );
+    }
+
+    #[test]
+    fn test_likelihood_from_closure() {
+        let sizes = vec![2, 2, 3, 2, 1];
+        let ctx = |k| sizes[k];
+
+        let key0 = 2;
+        let wfx0 = dmatrix![1.0, 0.0, 0.0; 0.0, 1.0, 0.0; 0.0, 0.0, 1.0];
+        let xifx0 = dvector![0.6, 0.6, 0.6];
+        let f0 = Prior {
+            key: key0,
+            xifx: xifx0,
+            wfx: wfx0,
+        };
+
+        let keys1 = vec![0, 1, 2];
+        let a1 = dmatrix![
+            1.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.1;
+            0.0, 1.0, 0.0, 0.0, 0.0, 1.2, -1.0;
+            0.0, 0.0, 1.0, 0.0, 0.0, 0.1, 0.0
+        ];
+        let layout1 = vec![(0, 2), (2, 2), (4, 3)];
+        let wby1 = dmatrix![1.0, 0.2, 0.0; 0.2, 1.0, 0.0; 0.0, 0.0, 1.0];
+        let xiby1 = dvector![0.4, 1.04, -0.5];
+        let f1 = Likelihood {
+            keys: keys1,
+            layout: layout1,
+            a: a1,
+            wby: wby1,
+            xiby: xiby1,
+        };
+
+        let keys2 = vec![1, 3, 4];
+        let a2 = dmatrix![
+            0.0, 0.2, 0.0, 0.0, 0.2;
+            0.8, 0.0, 0.0, 1.0, 0.8
+        ];
+        let layout2 = vec![(0, 2), (2, 2), (4, 1)];
+        let wby2 = dmatrix![0.8, 0.1; 0.1, 1.0];
+        let xiby2 = dvector![0.05, 0.5];
+        let f2 = Likelihood {
+            keys: keys2,
+            layout: layout2,
+            a: a2,
+            wby: wby2,
+            xiby: xiby2,
+        };
+
+        let factors = vec![
+            FactorRef::Prior(&f0),
+            FactorRef::Likelihood(&f1),
+            FactorRef::Likelihood(&f2),
+        ];
+        let kept_keys = vec![0, 1, 3];
+        let cleared_keys = vec![2, 4];
+        let new_factor =
+            Likelihood::from_closure(&factors, &kept_keys, &cleared_keys, ctx).unwrap();
+
+        assert_eq!(new_factor.keys, kept_keys);
+
+        assert!((new_factor.xiby[0] - -0.18566446904015022f64).abs() < 1e-9);
+        assert!((new_factor.xiby[1] - 0.2564704789814862f64).abs() < 1e-9);
+        assert!((new_factor.xiby[2] - -0.5849271856215628f64).abs() < 1e-9);
+        assert!((new_factor.xiby[3] - -0.08977272727272727f64).abs() < 1e-9);
+        assert!((new_factor.xiby[4] - 0.02244318181818189f64).abs() < 1e-9);
+
+        assert!((new_factor.wby[0] - 0.49401045386071685f64).abs() < 1e-9);
+        assert!((new_factor.wby[2] - -0.005219289506583182).abs() < 1e-9);
+        assert!((new_factor.wby[7] - -0.0347294345005616).abs() < 1e-9);
+        assert!((new_factor.wby[13] - 0f64).abs() < 1e-9);
+        assert!((new_factor.wby[19] - -0.17954545454545454f64).abs() < 1e-9);
+        assert!((new_factor.wby[24] - 0.04488636363636378f64).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_likelihood_from_closure_loop() {
+        let sizes = vec![1, 1, 1];
+        let ctx = |k| sizes[k];
+
+        let f0 = Prior {
+            key: 1,
+            xifx: dvector![0.2],
+            wfx: dmatrix![1.0],
+        };
+
+        let f1 = Likelihood {
+            keys: vec![0, 1],
+            layout: vec![(0, 1), (1, 1)],
+            a: dmatrix![1.0, 1.0],
+            wby: dmatrix![0.6],
+            xiby: dvector![0.06],
+        };
+        let f2 = Likelihood {
+            keys: vec![0, 2],
+            layout: vec![(0, 1), (1, 1)],
+            a: dmatrix![1.0, 1.0],
+            wby: dmatrix![1.0],
+            xiby: dvector![0.8],
+        };
+
+        let f3 = Likelihood {
+            keys: vec![1, 2],
+            layout: vec![(0, 1), (1, 1)],
+            a: dmatrix![1.0, 1.0],
+            wby: dmatrix![0.5],
+            xiby: dvector![0.5],
+        };
+
+        let factors = vec![
+            FactorRef::Prior(&f0),
+            FactorRef::Likelihood(&f1),
+            FactorRef::Likelihood(&f2),
+            FactorRef::Likelihood(&f3),
+        ];
+        let kept_keys = vec![0];
+        let cleared_keys = vec![1, 2];
+        let new_factor =
+            Likelihood::from_closure(&factors, &kept_keys, &cleared_keys, ctx).unwrap();
+
+        assert_eq!(new_factor.keys, kept_keys);
+
+        assert!((new_factor.xiby[0] - -0.04137931f64).abs() < 1e-6);
+        assert!((new_factor.xiby[1] - -0.01034483f64).abs() < 1e-6);
+        assert!((new_factor.xiby[2] - 0.01034483f64).abs() < 1e-6);
+
+        assert!((new_factor.wby[0] - 0.4137931f64).abs() < 1e-6);
+        assert!((new_factor.wby[2] - -0.10344828f64).abs() < 1e-6);
+        assert!((new_factor.wby[4] - 0.27586207f64).abs() < 1e-6);
+        assert!((new_factor.wby[7] - -0.27586207f64).abs() < 1e-6);
     }
 }

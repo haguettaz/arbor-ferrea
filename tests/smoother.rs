@@ -1,9 +1,9 @@
 // //! Tests for the Gaussian smoother.
 // //! The solutions can also be computed by solving
-// //! (At Wy A) mx != At xiy for x,
+// //! (At Wy A) mx = At Wy my for mx,
 // //! where A, Wy, and xiy represents the whole system.
 //
-use nalgebra::{dmatrix, dvector};
+use nalgebra::{RealField, dmatrix, dvector};
 // use std::iter::zip;
 //
 // // use arbor_ferrea::numeric::NumericTree;
@@ -20,6 +20,12 @@ const X4: Symbol = Symbol('x', 4);
 const X5: Symbol = Symbol('x', 5);
 const L1: Symbol = Symbol('l', 1);
 const L2: Symbol = Symbol('l', 2);
+
+fn print_result<T: RealField>(marginals: &Vec<Marginal<T>>) {
+    for p in marginals {
+        println!("key {} has mean {:#} and covariance {:#}", p.key, p.m, p.v);
+    }
+}
 
 #[test]
 /// Context: empty factor graphs
@@ -125,7 +131,7 @@ fn run_smoother_line_anchored() {
     factor_graph
         .add_prior(
             x1,
-            dvector![0.0, 0.0, 0.0],
+            dvector![0.6, 0.6, 0.6],
             dmatrix![
                 1e15, 0.0, 0.0;
                 0.0, 1e15, 0.0;
@@ -191,15 +197,31 @@ fn run_smoother_line_anchored() {
             ],
             dvector![0.2, 1.0, -0.5],
             dmatrix![
-                1.0, 0.2, 0.0;
-                0.2, 1.0, 0.0;
-                0.0, 0.0, 1.0
+                1.0, 0.0, 0.0;
+                0.0, 2.0, 0.2;
+                0.0, 0.2, 2.0
             ],
         )
         .unwrap();
 
     let smoother = Smoother::new(factor_graph);
-    assert!(smoother.run().is_ok());
+    let marginals = smoother.run().unwrap();
+
+    assert!((marginals[x1].m[0] - 0.6f64).abs() < 1e-9);
+    assert!((marginals[x1].m[1] - 0.6f64).abs() < 1e-9);
+    assert!((marginals[x1].m[2] - 0.6f64).abs() < 1e-9);
+    assert!((marginals[x2].m[0] - 0.4f64).abs() < 1e-9);
+    assert!((marginals[x2].m[1] - -0.4f64).abs() < 1e-9);
+    assert!((marginals[x2].m[2] - 1.1f64).abs() < 1e-9);
+    assert!((marginals[x3].m[0] - 0.5f64).abs() < 1e-9);
+    assert!((marginals[x3].m[1] - -1.2f64).abs() < 1e-9);
+    assert!((marginals[x3].m[2] - 1f64).abs() < 1e-9);
+    assert!((marginals[x4].m[0] - 0.3f64).abs() < 1e-9);
+    assert!((marginals[x4].m[1] - -2.2f64).abs() < 1e-9);
+    assert!((marginals[x4].m[2] - 1.5f64).abs() < 1e-9);
+    assert!((marginals[x5].m[0] - 0.1f64).abs() < 1e-9);
+    assert!((marginals[x5].m[1] - -3.2f64).abs() < 1e-9);
+    assert!((marginals[x5].m[2] - 2f64).abs() < 1e-9);
 }
 
 #[test]
@@ -281,21 +303,84 @@ fn run_smoother_line() {
             ],
             dvector![0.2, 1.0, -0.5],
             dmatrix![
-                1.0, 0.2, 0.0;
-                0.2, 1.0, 0.0;
-                0.0, 0.0, 1.0
+                1.0, 0.0, 0.0;
+                0.0, 2.0, 0.2;
+                0.0, 0.2, 2.0
             ],
         )
         .unwrap();
 
     let smoother = Smoother::new(factor_graph);
-    assert!(smoother.run().is_ok());
+    let marginals = smoother.run().unwrap();
+
+    // print_result(&marginals);
+
+    assert!((marginals[x1].m[0] - 0f64).abs() < 1e-9);
+    assert!((marginals[x1].m[1] - 0f64).abs() < 1e-9);
+    assert!((marginals[x1].m[2] - 0f64).abs() < 1e-9);
+    assert!((marginals[x2].m[0] - -0.2f64).abs() < 1e-9);
+    assert!((marginals[x2].m[1] - -1f64).abs() < 1e-9);
+    assert!((marginals[x2].m[2] - 0.5f64).abs() < 1e-9);
+    assert!((marginals[x3].m[0] - -0.1f64).abs() < 1e-9);
+    assert!((marginals[x3].m[1] - -1.8f64).abs() < 1e-9);
+    assert!((marginals[x3].m[2] - 0.4f64).abs() < 1e-9);
+    assert!((marginals[x4].m[0] - -0.3f64).abs() < 1e-9);
+    assert!((marginals[x4].m[1] - -2.8f64).abs() < 1e-9);
+    assert!((marginals[x4].m[2] - 0.9f64).abs() < 1e-9);
+    assert!((marginals[x5].m[0] - -0.5f64).abs() < 1e-9);
+    assert!((marginals[x5].m[1] - -3.8f64).abs() < 1e-9);
+    assert!((marginals[x5].m[2] - 1.4f64).abs() < 1e-9);
 }
 
-///
+#[test]
+fn run_smoother_loop() {
+    let mut factor_graph = FactorGraph::new();
+
+    let x1 = factor_graph.add_variable(X1, 1).unwrap();
+    let x2 = factor_graph.add_variable(X2, 1).unwrap();
+    let x3 = factor_graph.add_variable(X3, 1).unwrap();
+
+    factor_graph
+        .add_prior(x2, dvector![0.2], dmatrix![1.0])
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x1, x2],
+            dmatrix![1.0, 1.0],
+            dvector![0.1],
+            dmatrix![0.6],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x1, x3],
+            dmatrix![1.0, 1.0],
+            dvector![0.8],
+            dmatrix![1.0],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x2, x3],
+            dmatrix![1.0, 1.0],
+            dvector![1.0],
+            dmatrix![0.5],
+        )
+        .unwrap();
+
+    let smoother = Smoother::new(factor_graph);
+    let marginals = smoother.run().unwrap();
+
+    // print_result(&marginals);
+
+    assert!((marginals[x1].m[0] - -0.05769231f64).abs() < 1e-6);
+    assert!((marginals[x2].m[0] - 0.17692308f64).abs() < 1e-6);
+    assert!((marginals[x3].m[0] - 0.84615385f64).abs() < 1e-6);
+}
+
 #[test]
 /// Context: incomplete system with no global anchor
-fn run_smoother_loopy_singular() {
+fn run_smoother_slam_singular() {
     let mut factor_graph = FactorGraph::new();
 
     let x1 = factor_graph.add_variable(X1, 3).unwrap();
@@ -341,7 +426,7 @@ fn run_smoother_loopy_singular() {
             vec![x1, l1],
             dmatrix![
                 0.5, 0.5, 0.0, -1.0, 0.0;
-                0.0, 0.75, 0.25, 0.0, -1.0
+                0.0, 0.7, 0.2, 0.0, -1.0
             ],
             dvector![0.0, 0.5],
             dmatrix![
@@ -355,7 +440,7 @@ fn run_smoother_loopy_singular() {
             vec![x2, l1],
             dmatrix![
                     0.6, 0.4, 0.0, -0.5, -0.5;
-                    0.1, 0.8, 0., 0.0, -0.8
+                    0.1, 0.8, 0.0, 0.0, -0.8
             ],
             dvector![0.1, 0.2],
             dmatrix![
@@ -369,7 +454,7 @@ fn run_smoother_loopy_singular() {
             vec![x3, l2],
             dmatrix![
                     0.6, 0.4, 0.0, -0.5, -0.5;
-                    0.1, 0.8, 0., 0.0, -0.8
+                    0.1, 0.8, 0.0, 0.0, -0.8
             ],
             dvector![0.8, 0.0],
             dmatrix![
@@ -382,10 +467,10 @@ fn run_smoother_loopy_singular() {
     let smoother = Smoother::new(factor_graph);
     assert!(smoother.run().is_err());
 }
-//
+
 #[test]
 /// Context: valid system with fixed x1 = (0,0,0)
-fn run_smoother_loopy_anchored() {
+fn run_smoother_slam_anchored() {
     let mut factor_graph = FactorGraph::new();
 
     let x1 = factor_graph.add_variable(X1, 3).unwrap();
@@ -481,11 +566,27 @@ fn run_smoother_loopy_anchored() {
         .unwrap();
 
     let smoother = Smoother::new(factor_graph);
-    assert!(smoother.run().is_ok());
+    let marginals = smoother.run().unwrap();
+
+    // print_result(&marginals);
+
+    assert!((marginals[x1].m[0] - 0f64).abs() < 1e-9);
+    assert!((marginals[x1].m[1] - 0f64).abs() < 1e-9);
+    assert!((marginals[x1].m[2] - 0f64).abs() < 1e-9);
+    assert!((marginals[x2].m[0] - -0.15123639030761496f64).abs() < 1e-9);
+    assert!((marginals[x2].m[1] - -0.7691441389732718f64).abs() < 1e-9);
+    assert!((marginals[x2].m[2] - 0.5f64).abs() < 1e-9);
+    assert!((marginals[x3].m[0] - -0.05123639030761518f64).abs() < 1e-9);
+    assert!((marginals[x3].m[1] - -1.569144138973271f64).abs() < 1e-9);
+    assert!((marginals[x3].m[2] - 0.4f64).abs() < 1e-9);
+    assert!((marginals[l1].m[0] - -0.008835674634139276f64).abs() < 1e-9);
+    assert!((marginals[l1].m[1] - -0.7506339405887562f64).abs() < 1e-9);
+    assert!((marginals[l2].m[0] - -1.3412502917860332f64).abs() < 1e-9);
+    assert!((marginals[l2].m[1] - -1.5755486877617224f64).abs() < 1e-9);
 }
 
 #[test]
-fn run_smoother_loopy() {
+fn run_smoother_slam() {
     let mut factor_graph = FactorGraph::new();
 
     let x1 = factor_graph.add_variable(X1, 3).unwrap();
@@ -497,11 +598,11 @@ fn run_smoother_loopy() {
     factor_graph
         .add_prior(
             x1,
-            dvector![0.0, 0.0, 0.0],
+            dvector![0.6, 0.6, 0.6],
             dmatrix![
-                1e15, 0.0, 0.0;
-                0.0, 1e15, 0.0;
-                0.0, 0.0, 1e15
+                1.0, 0.0, 0.0;
+                0.0, 1.0, 0.0;
+                0.0, 0.0, 1.0
             ],
         )
         .unwrap();
@@ -542,7 +643,7 @@ fn run_smoother_loopy() {
             vec![x1, l1],
             dmatrix![
                 0.5, 0.5, 0.0, -1.0, 0.0;
-                0.0, 0.75, 0.25, 0.0, -1.0
+                0.0, 0.7, 0.2, 0.0, -1.0
             ],
             dvector![0.0, 0.5],
             dmatrix![
@@ -570,7 +671,7 @@ fn run_smoother_loopy() {
             vec![x3, l2],
             dmatrix![
                     0.6, 0.4, 0.0, -0.5, -0.5;
-                    0.1, 0.8, 0., 0.0, -0.8
+                    0.1, 0.8, 0.0, 0.0, -0.8
             ],
             dvector![0.8, 0.0],
             dmatrix![
@@ -581,5 +682,26 @@ fn run_smoother_loopy() {
         .unwrap();
 
     let smoother = Smoother::new(factor_graph);
-    assert!(smoother.run().is_ok());
+    let marginals = smoother.run().unwrap();
+
+    // print_result(&marginals);
+
+    assert!((marginals[x1].m[0] - 0.6564138595032128f64).abs() < 1e-9);
+    assert!((marginals[x1].m[1] - 0.6241884121887437f64).abs() < 1e-9);
+    assert!((marginals[x1].m[2] - 0.5589245856455567f64).abs() < 1e-9);
+    assert!((marginals[x1].v[2] - 0.01669105661136293f64).abs() < 1e-9);
+    assert!((marginals[x1].v[5] - 0.008269205760133392f64).abs() < 1e-9);
+    assert!((marginals[x1].v[6] - 0.01669105661136293f64).abs() < 1e-9);
+
+    assert!((marginals[x3].m[0] - 0.6024648336837418f64).abs() < 1e-9);
+    assert!((marginals[x3].m[1] - -0.99033748497312f64).abs() < 1e-9);
+    assert!((marginals[x3].m[2] - 0.9589245856455569f64).abs() < 1e-9);
+
+    assert!((marginals[l1].m[0] - 0.6273964940382243f64).abs() < 1e-9);
+    assert!((marginals[l1].m[1] - -0.15407933774943508f64).abs() < 1e-9);
+
+    assert!((marginals[l2].m[0] - -0.7542828067953536f64).abs() < 1e-9);
+    assert!((marginals[l2].m[1] - -0.9150293807626527f64).abs() < 1e-9);
+    assert!((marginals[l2].v[0] - 6.444405857283167f64).abs() < 1e-9);
+    assert!((marginals[l2].v[1] - -1.2066704533233978f64).abs() < 1e-9);
 }
