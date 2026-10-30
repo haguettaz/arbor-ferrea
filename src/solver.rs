@@ -182,7 +182,7 @@ where
                     Slot::Closed(j) => FactorRef::Likelihood(&messages[*j].factor),
                 })
                 .collect();
-            Likelihood::from_closure(&refs, &kept_keys, &cleared_keys, &ctx)
+            Likelihood::from_closure(&refs, kept_keys.clone(), cleared_keys.clone(), &ctx)
                 .with_context(|| format!("Failed to compute factor for key {key}"))?
         };
 
@@ -311,7 +311,7 @@ impl<T: RealField> Smoother<T> {
                 };
             }
 
-            let likelihood = Likelihood::from_closure(&factors, &[key], &rem_keys, ctx)?;
+            let likelihood = Likelihood::from_closure(&factors, vec![key], rem_keys.clone(), ctx)?;
 
             let marginal = Marginal::from(key, prior, &likelihood)?;
 
