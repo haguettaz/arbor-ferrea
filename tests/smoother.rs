@@ -136,9 +136,9 @@ fn run_smoother_line_anchored() {
             x1,
             dvector![0.6, 0.6, 0.6],
             dmatrix![
-                1e15, 0.0, 0.0;
-                0.0, 1e15, 0.0;
-                0.0, 0.0, 1e15
+                1e-15, 0.0, 0.0;
+                0.0, 1e-15, 0.0;
+                0.0, 0.0, 1e-15
             ],
         )
         .unwrap();
@@ -316,8 +316,6 @@ fn run_smoother_line() {
     let smoother = Smoother::new(factor_graph);
     let marginals = smoother.run().unwrap();
 
-    // print_result(&marginals);
-
     assert!((marginals[x1].mean[0] - 0f64).abs() < 1e-9);
     assert!((marginals[x1].mean[1] - 0f64).abs() < 1e-9);
     assert!((marginals[x1].mean[2] - 0f64).abs() < 1e-9);
@@ -374,11 +372,9 @@ fn run_smoother_loop() {
     let smoother = Smoother::new(factor_graph);
     let marginals = smoother.run().unwrap();
 
-    // print_result(&marginals);
-
-    assert!((marginals[x1].mean[0] - -0.05769231f64).abs() < 1e-6);
-    assert!((marginals[x2].mean[0] - 0.17692308f64).abs() < 1e-6);
-    assert!((marginals[x3].mean[0] - 0.84615385f64).abs() < 1e-6);
+    assert!((marginals[x1].mean[0] - -0.05737704918032777f64).abs() < 1e-9);
+    assert!((marginals[x2].mean[0] - 0.16721311475409825).abs() < 1e-9);
+    assert!((marginals[x3].mean[0] - 0.8409836065573769f64).abs() < 1e-9);
 }
 
 #[test]
@@ -487,9 +483,9 @@ fn run_smoother_slam_anchored() {
             x1,
             dvector![0.0, 0.0, 0.0],
             dmatrix![
-                1e15, 0.0, 0.0;
-                0.0, 1e15, 0.0;
-                0.0, 0.0, 1e15
+                1e-15, 0.0, 0.0;
+                0.0, 1e-15, 0.0;
+                0.0, 0.0, 1e-15
             ],
         )
         .unwrap();
@@ -571,21 +567,19 @@ fn run_smoother_slam_anchored() {
     let smoother = Smoother::new(factor_graph);
     let marginals = smoother.run().unwrap();
 
-    // print_result(&marginals);
-
     assert!((marginals[x1].mean[0] - 0f64).abs() < 1e-9);
     assert!((marginals[x1].mean[1] - 0f64).abs() < 1e-9);
     assert!((marginals[x1].mean[2] - 0f64).abs() < 1e-9);
-    assert!((marginals[x2].mean[0] - -0.15123639030761496f64).abs() < 1e-9);
-    assert!((marginals[x2].mean[1] - -0.7691441389732718f64).abs() < 1e-9);
+    assert!((marginals[x2].mean[0] - -0.09905619973311207f64).abs() < 1e-9);
+    assert!((marginals[x2].mean[1] - -0.7729435658383524f64).abs() < 1e-9);
     assert!((marginals[x2].mean[2] - 0.5f64).abs() < 1e-9);
-    assert!((marginals[x3].mean[0] - -0.05123639030761518f64).abs() < 1e-9);
-    assert!((marginals[x3].mean[1] - -1.569144138973271f64).abs() < 1e-9);
+    assert!((marginals[x3].mean[0] - 0.0009438002668878695f64).abs() < 1e-9);
+    assert!((marginals[x3].mean[1] - -1.5729435658383526f64).abs() < 1e-9);
     assert!((marginals[x3].mean[2] - 0.4f64).abs() < 1e-9);
-    assert!((marginals[l1].mean[0] - -0.008835674634139276f64).abs() < 1e-9);
-    assert!((marginals[l1].mean[1] - -0.7506339405887562f64).abs() < 1e-9);
-    assert!((marginals[l2].mean[0] - -1.3412502917860332f64).abs() < 1e-9);
-    assert!((marginals[l2].mean[1] - -1.5755486877617224f64).abs() < 1e-9);
+    assert!((marginals[l1].mean[0] - -0.07232187939553504f64).abs() < 1e-9);
+    assert!((marginals[l1].mean[1] - -0.7267273325639271f64).abs() < 1e-9);
+    assert!((marginals[l2].mean[0] - -1.2843967015454254f64).abs() < 1e-9);
+    assert!((marginals[l2].mean[1] - -1.5728255908049915f64).abs() < 1e-9);
 }
 
 #[test]
@@ -687,24 +681,22 @@ fn run_smoother_slam() {
     let smoother = Smoother::new(factor_graph);
     let marginals = smoother.run().unwrap();
 
-    // print_result(&marginals);
+    assert!((marginals[x1].mean[0] - 0.6414681199221776f64).abs() < 1e-9);
+    assert!((marginals[x1].mean[1] - 0.6305950058258917f64).abs() < 1e-9);
+    assert!((marginals[x1].mean[2] - 0.5641386059266061f64).abs() < 1e-9);
+    assert!((marginals[x1].cov[2] - 0.011845650541686714f64).abs() < 1e-9);
+    assert!((marginals[x1].cov[5] - 0.010674829779356918f64).abs() < 1e-9);
+    assert!((marginals[x1].cov[6] - 0.011845650541686714f64).abs() < 1e-9);
 
-    assert!((marginals[x1].mean[0] - 0.6564138595032128f64).abs() < 1e-9);
-    assert!((marginals[x1].mean[1] - 0.6241884121887437f64).abs() < 1e-9);
-    assert!((marginals[x1].mean[2] - 0.5589245856455567f64).abs() < 1e-9);
-    assert!((marginals[x1].cov[2] - 0.01669105661136293f64).abs() < 1e-9);
-    assert!((marginals[x1].cov[5] - 0.008269205760133392f64).abs() < 1e-9);
-    assert!((marginals[x1].cov[6] - 0.01669105661136293f64).abs() < 1e-9);
+    assert!((marginals[x3].mean[0] - 0.6340414328187938f64).abs() < 1e-9);
+    assert!((marginals[x3].mean[1] - -0.985118269149018f64).abs() < 1e-9);
+    assert!((marginals[x3].mean[2] - 0.9641386059266073f64).abs() < 1e-9);
 
-    assert!((marginals[x3].mean[0] - 0.6024648336837418f64).abs() < 1e-9);
-    assert!((marginals[x3].mean[1] - -0.99033748497312f64).abs() < 1e-9);
-    assert!((marginals[x3].mean[2] - 0.9589245856455569f64).abs() < 1e-9);
+    assert!((marginals[l1].mean[0] - 0.567031475537499f64).abs() < 1e-9);
+    assert!((marginals[l1].mean[1] - -0.13169048375615228f64).abs() < 1e-9);
 
-    assert!((marginals[l1].mean[0] - 0.6273964940382243f64).abs() < 1e-9);
-    assert!((marginals[l1].mean[1] - -0.15407933774943508f64).abs() < 1e-9);
-
-    assert!((marginals[l2].mean[0] - -0.7542828067953536f64).abs() < 1e-9);
-    assert!((marginals[l2].mean[1] - -0.9150293807626527f64).abs() < 1e-9);
-    assert!((marginals[l2].cov[0] - 6.444405857283167f64).abs() < 1e-9);
-    assert!((marginals[l2].cov[1] - -1.2066704533233978f64).abs() < 1e-9);
+    assert!((marginals[l2].mean[0] - -0.7213818058899935f64).abs() < 1e-9);
+    assert!((marginals[l2].mean[1] - -0.9058630900466684f64).abs() < 1e-9);
+    assert!((marginals[l2].cov[0] - 13.069821055981416f64).abs() < 1e-9);
+    assert!((marginals[l2].cov[1] - -2.669764109763409f64).abs() < 1e-9);
 }

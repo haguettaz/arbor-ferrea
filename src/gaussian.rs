@@ -614,7 +614,7 @@ impl<T: RealField> FactorGraph<T> {
         Ok(id)
     }
 
-    pub fn add_prior(&mut self, key: usize, mfx: DVector<T>, wfx: DMatrix<T>) -> Result<usize> {
+    pub fn add_prior(&mut self, key: usize, mfx: DVector<T>, vfx: DMatrix<T>) -> Result<usize> {
         ensure!(
             self.has_key(key),
             "The provided prior concerns a variable that has not been registered yet.",
@@ -633,19 +633,21 @@ impl<T: RealField> FactorGraph<T> {
             )
         );
         ensure!(
-            (wfx.nrows() == dim_x) && (wfx.ncols() == dim_x),
+            (vfx.nrows() == dim_x) && (vfx.ncols() == dim_x),
             format!(
                 "Expected precision matrix to have shape ({}, {}), got ({}, {}).",
                 dim_x,
                 dim_x,
-                wfx.nrows(),
-                wfx.ncols(),
+                vfx.nrows(),
+                vfx.ncols(),
             )
         );
 
         let id = self.factors().len();
 
-        let xifx = &wfx * &mfx;
+        let chol_vfx = Cholesky::new(vfx).with_context(|| "Cholesky factorization failed")?;
+        let xifx = chol_vfx.solve(&mfx);
+        let wfx = chol_vfx.inverse();
         self.factors.push(Factor::Prior(Prior { key, xifx, wfx }));
 
         Ok(id)
@@ -656,7 +658,7 @@ impl<T: RealField> FactorGraph<T> {
         keys: Vec<usize>,
         a: DMatrix<T>,
         mby: DVector<T>,
-        wby: DMatrix<T>,
+        vby: DMatrix<T>,
     ) -> Result<usize> {
         ensure!(keys.is_sorted(), "Keys must be sorted.");
         ensure!(
@@ -669,15 +671,15 @@ impl<T: RealField> FactorGraph<T> {
         let dim_x = layout.dim();
         let dim_y = mby.nrows();
 
-        // check wby shape
+        // check vby shape
         ensure!(
-            (wby.nrows() == dim_y) && (wby.ncols() == dim_y),
+            (vby.nrows() == dim_y) && (vby.ncols() == dim_y),
             format!(
                 "Expected precision matrix to have shape ({}, {}), got ({}, {}).",
                 dim_y,
                 dim_y,
-                wby.nrows(),
-                wby.ncols(),
+                vby.nrows(),
+                vby.ncols(),
             )
         );
 
@@ -695,7 +697,10 @@ impl<T: RealField> FactorGraph<T> {
 
         let id = self.factors.len();
 
-        let xiby = &wby * &mby;
+        let chol_vby = Cholesky::new(vby).with_context(|| "Cholesky factorization failed")?;
+        let xiby = chol_vby.solve(&mby);
+        let wby = chol_vby.inverse();
+
         self.factors.push(Factor::Likelihood(Likelihood {
             layout,
             a,
