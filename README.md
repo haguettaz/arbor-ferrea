@@ -1,95 +1,120 @@
 # 🦀 arbor-ferrea
 
-A Rust solver for sparse linear least-squares problems, built around tree-structured Gaussian factor graphs.
+<!--[![crates.io](https://img.shields.io/crates/v/arbor-ferrea.svg)](https://crates.io/crates/arbor-ferrea)
+[![docs.rs](https://docs.rs/arbor-ferrea/badge.svg)](https://docs.rs/arbor-ferrea)-->
 
-The crate resolves cyclic graphs by sequentially eliminating variables (max-product message passing) to form a rooted computation tree. 
-This implements the upward-filtering / downward-deciding framework detailed in the *Model-Based Estimation and Signal Analysis* [lecture notes](https://doi.org/10.3929/ethz-c-000785981) (Prof. Loeliger, ETH Zürich).
+A Rust solver for sparse **linear least-squares** problems and linear-Gaussian
+state estimation, based on Gaussian message passing over Gaussian factor graphs.
 
-Dense matrix operations rely on [`nalgebra`](https://docs.rs/nalgebra/latest/nalgebra/index.html), with support for sequential and parallel ([`rayon`](https://docs.rs/rayon/latest/rayon/)) tree passes.
+> **Status:** this project is under active research and development, and the
+> API is subject to change. If you need a mature, general-purpose
+> factor-graph optimization library in Rust today, see
+> [`factrs`](https://docs.rs/factrs/latest/factrs/index.html).
 
-> This project is under active research and development; the API is subject to change. If you need a mature, general-purpose factor-graph optimization library in Rust today, check out [`factrs`](https://docs.rs/factrs/latest/factrs/index.html).
+Describe your problem as a collection of Gaussian factors connecting
+variables. The solver runs message passing on the resulting factor graph and
+returns the estimates. The solution is **exact**, including on graphs with
+loops; the method is detailed in the [report](report/report.pdf).
+
+Only linear-Gaussian problems are supported. Nonlinear problems are out of
+scope (linearize them first).
 
 ## ⚡ Quickstart
 
-Add the crate to your `Cargo.toml`:
-
-```bash
-cargo add arbor-ferrea
-```
+A prior on `x1` and one observation linking `x1` and `x2`:
 
 ```rust
 use anyhow::Result;
-use arbor_ferrea::ui::*;
+use nalgebra::{dmatrix, dvector};
+
+use arbor_ferrea::gaussian::*;
+use arbor_ferrea::solver::*;
+
+const X1: Symbol = Symbol('x', 1);
+const X2: Symbol = Symbol('x', 2);
 
 fn main() -> Result<()> {
-    // initialize an empty factor graph
-    let mut factor_graph = GaussianFactorGraph::new();
-    
-    // register variables: (symbol, dimension)
-    let x1 = factor_graph.add_variable(VarSymbol('x', 1), 1)?;
-    let x2 = factor_graph.add_variable(VarSymbol('x', 2), 1)?;
-    
-    // prior factor on x1: x1 ~ N(0.0, 1.0)
-    factor_graph.add_factor(
-        vec![x1],
-        vec![dmatrix![1.0]],       // Measurement matrix A
-        dvector![0.0],             // Mean / measurement
-        dmatrix![1.0],             // Information / weight matrix W
+    let mut factor_graph = FactorGraph::new();
+
+    // Variables: a symbol and a dimension.
+    let x1 = factor_graph.add_variable(X1, 2)?;
+    let x2 = factor_graph.add_variable(X2, 2)?;
+
+    // Prior: x1 ~ N(mean, covariance)
+    factor_graph.add_prior(
+        x1,
+        dvector![0.0, 0.0],
+        dmatrix![
+            1.0, 0.0;
+            0.0, 1.0
+        ],
     )?;
-    
-    // odometry factor between x1 and x2: x2 - x1 ~ N(2.0, 1.0)
-    factor_graph.add_factor(
+
+    // Observation: z = A [x1; x2] + noise, noise ~ N(0, covariance)
+    // Arguments: variables, A, z, covariance.
+    factor_graph.add_observation(
         vec![x1, x2],
-        vec![dmatrix![-1.0], dmatrix![1.0]], // [-I, I]
-        dvector![2.0],
-        dmatrix![1.0],
+        dmatrix![
+            1.0, 0.0, -1.0, 0.0;
+            0.0, 1.0, 0.0, -1.0
+        ],
+        dvector![0.2, 1.0],
+        dmatrix![
+            1.0, 0.2;
+            0.2, 1.0
+        ],
     )?;
-    
-    // build symbolic computation tree along elimination order
-    let order = [x1, x2];
-    let symb_tree = factor_graph.build_symbolic_tree(&order)?;
-    
-    // sequential solve
-    let solution = factor_graph.solve_seq(&symb_tree)?;
-    // or in parallel: factor_graph.solve_par(&symb_tree)?;
-    
-    println!("x1: {:?}", factor_graph.value(x1).unwrap());
-    println!("x2: {:?}", factor_graph.value(x2).unwrap());
-    
+
+    // Estimate all variables.
+    let smoother = Smoother::new(factor_graph);
+    let marginals = smoother.run()?;
+    println!("{marginals:?}");
+
     Ok(())
 }
 ```
 
+A larger example, with five variables and a loop in the graph, is in
+[`examples/`](examples/).
 
-## 🗺️ Roadmap & Features
+## 🧭 Choosing what to compute
 
-### Symbolic and Numeric Trees
-- [x] Sequential build and solve
-- [x] Parallel build and solve
-- [ ] Variable elimination heuristics (COLAMD / Constrained COLAMD)
-- [ ] Efficient updates (same tree structure but new data)
-- [ ] Incremental updates (extend tree structure)
-- [ ] Tree cut
+The solver is organized along two independent axes.
 
-### Gaussian Tree
-- [x] Sequential build and solve
-- [x] Parallel build and solve
-- [ ] Variable elimination heuristics (COLAMD / Constrained COLAMD)
-- [ ] Efficient updates (same tree structure but new data)
-- [ ] Incremental updates (extend tree structure)
-- [ ] Tree cut
- 
-### Robust Estimation & Factors
-- [ ] NUP integration, e.g., Huber kernel
+#### What to estimate
 
-### User Interface
-- [x] Safe Gaussian factor graph construction
+| Mode         | Estimates                      | Status      |
+|--------------|--------------------------------|-------------|
+| **Smoother** | All states                     | Available   |
+| **Filter**   | Only the last state            | Coming soon |
+
+#### With or without uncertainties
+
+| Algorithm       | Output                                                      | Status      |
+|-----------------|-------------------------------------------------------------|-------------|
+| **Sum-product** | Marginals -- estimates **with** uncertainties                 | Available   |
+| **Max-product** | MAP -- estimates **without** uncertainties                    | Coming soon |
+
+## 🗺️ Roadmap
+
+- Filter mode (last variable only).
+- Estimation without uncertainties (max-product).
+
+## 🤝 Contributing
+
+The API is still moving, so please open an issue to discuss a change before sending a pull request.
+
+## 📄 License
+
+See [LICENSE](LICENSE).
 
 ## 📚 References
 
-- H.-A. Loeliger, J. Dauwels, J. Hu, S. Korl, Li Ping, and F. Kschischang, 
-**The factor graph approach to model-based signal processing,** 
-*Proceedings of the IEEE, vol. 95, no. 6, pp. 1295-1322, June 2007.*
-- M. Kaess, H. Johannsson, R. Roberts, V. Ila, J. Leonard, and F. Dellaert,
-**iSAM2: incremental smoothing and mapping using the Bayes tree,** 
-*The International Journal of Robotics Research (IJRR), vol. 31, no. 2, pp. 216–235, 2012.*
+H.-A. Loeliger, J. Dauwels, J. Hu, S. Korl, Li Ping, and F. Kschischang,
+  **The factor graph approach to model-based signal processing,**
+  *Proceedings of the IEEE, vol. 95, no. 6, pp. 1295-1322, June 2007.*
+  [doi:10.1109/JPROC.2007.896497](https://doi.org/10.1109/JPROC.2007.896497)
+<!--- M. Kaess, H. Johannsson, R. Roberts, V. Ila, J. Leonard, and F. Dellaert,
+  **iSAM2: incremental smoothing and mapping using the Bayes tree,**
+  *The International Journal of Robotics Research (IJRR), vol. 31, no. 2, pp. 216–235, 2012.*
+  [doi:10.1177/0278364911430419](https://doi.org/10.1177/0278364911430419)-->
