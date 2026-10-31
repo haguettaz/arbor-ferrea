@@ -54,7 +54,8 @@ rust-project.json
 .harper-dictionary.txt
 
 report/*
-!report/report.{pdf,md}
+!report/report.pdf
+# !report/report.md
 # notes.md
 # notes.txt
 # notes.rs
