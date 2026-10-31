@@ -172,17 +172,12 @@ where
 
         // Borrows of `messages` end with this block, so the push below is fine
         let factor = {
-            let refs: Vec<FactorRef<T>> = cleared_slots
-                .iter()
-                .map(|s| match s {
-                    Slot::Original(i) => match &factors[*i] {
-                        Factor::Prior(p) => FactorRef::Prior(p),
-                        Factor::Likelihood(l) => FactorRef::Likelihood(l),
-                    },
-                    Slot::Closed(j) => FactorRef::Likelihood(&messages[*j].factor),
-                })
-                .collect();
-            Likelihood::from_closure(&refs, kept_keys.clone(), cleared_keys.clone(), &ctx)
+            let refs = cleared_slots.iter().map(|s| match s {
+                Slot::Original(i) => FactorView::from(&factors[*i]),
+                Slot::Closed(j) => FactorView::from(&messages[*j].factor),
+            });
+
+            Likelihood::eliminate(refs, &kept_keys, &cleared_keys, &ctx)
                 .with_context(|| format!("Failed to compute factor for key {key}"))?
         };
 
@@ -227,95 +222,52 @@ impl<T: RealField> Smoother<T> {
     }
 
     pub fn run(&self) -> Result<Vec<Marginal<T>>> {
-        let ctx = |key| self.factor_graph.size(key).unwrap_or(0);
+        let ctx = |k: usize| self.factor_graph.size(k).unwrap_or(0);
+        let n = self.n_keys();
 
-        // forward pass
-        let forward_messages = full_pass(self.n_keys(), self.factors(), self.keys(), ctx)
-            .with_context(|| "an error occured during the forward pass")?;
+        let forward = full_pass(n, self.factors(), self.keys(), ctx)
+            .context("error during the forward pass")?;
+        let backward = full_pass(n, self.factors(), self.keys().rev(), ctx)
+            .context("error during the backward pass")?;
 
-        // backward pass
-        let backward_messages = full_pass(self.n_keys(), self.factors(), self.keys().rev(), ctx)
-            .with_context(|| "an error occured during the backward pass")?;
-
-        // compute marginals
-        let mut marginals = Vec::with_capacity(self.n_keys());
-        let mut factors = Vec::new();
-        let mut rem_keys = Vec::new();
+        let mut marginals = Vec::with_capacity(n);
+        let mut factors: Vec<FactorView<'_, T>> = Vec::new();
+        let mut rem_keys: Vec<usize> = Vec::new();
+        let mut covered = vec![false; self.n_factors()];
+        let mut stack = Vec::new();
 
         for key in self.keys() {
             factors.clear();
-            rem_keys.clear();
+            covered.fill(false);
 
-            let key_step_forward = key;
-            let key_step_backward = self.n_keys() - 1 - key;
-
-            let forward_ids = alive_messages(&forward_messages, key_step_forward);
-            let backward_ids = alive_messages(&backward_messages, key_step_backward);
-
-            let mut covered = vec![false; self.n_factors()];
-            let mut stack = Vec::new();
-            for &i in &forward_ids {
-                mark_leaves(&forward_messages, i, &mut covered, &mut stack)?;
+            for i in alive_messages(&forward, key) {
+                mark_leaves(&forward, i, &mut covered, &mut stack)?;
+                factors.push(FactorView::from(&forward[i].factor));
             }
-            for &i in &backward_ids {
-                mark_leaves(&backward_messages, i, &mut covered, &mut stack)?;
+            for i in alive_messages(&backward, n - 1 - key) {
+                mark_leaves(&backward, i, &mut covered, &mut stack)?;
+                factors.push(FactorView::from(&backward[i].factor));
             }
-
-            let original_ids = (0..self.n_factors())
-                .filter(|&i| !covered[i])
-                .collect::<Vec<_>>();
-
-            for &i in &forward_ids {
-                for &k in forward_messages[i].factor.keys() {
-                    if k != key && !rem_keys.contains(&k) {
-                        rem_keys.push(k);
-                    }
+            for (i, &covered_i) in covered.iter().enumerate() {
+                if covered_i {
+                    continue;
                 }
-                factors.push(FactorRef::Likelihood(&forward_messages[i].factor));
-            }
-            for &i in &backward_ids {
-                for &k in backward_messages[i].factor.keys() {
-                    if k != key && !rem_keys.contains(&k) {
-                        rem_keys.push(k);
-                    }
-                }
-                factors.push(FactorRef::Likelihood(&backward_messages[i].factor));
-            }
-
-            let mut prior = None;
-            for &i in &original_ids {
-                let factor = self
+                let f = self
                     .factor(i)
-                    .with_context(|| format!("factor with id {} not found", i))?;
-                match factor {
-                    Factor::Likelihood(p) => {
-                        factors.push(FactorRef::Likelihood(p));
-                        for &k in p.keys() {
-                            if k != key && !rem_keys.contains(&k) {
-                                rem_keys.push(k);
-                            }
-                        }
-                    }
-                    Factor::Prior(p) => {
-                        if p.has_key(key) {
-                            prior = Some(p);
-                        } else {
-                            factors.push(FactorRef::Prior(p));
-                            for &k in p.keys() {
-                                if k != key && !rem_keys.contains(&k) {
-                                    rem_keys.push(k);
-                                }
-                            }
-                        }
-                    }
-                };
+                    .with_context(|| format!("factor {i} not found"))?;
+                factors.push(FactorView::from(f)); // priors on `key` included
             }
 
-            let likelihood = Likelihood::from_closure(&factors, vec![key], rem_keys.clone(), ctx)?;
+            rem_keys.clear();
+            for f in &factors {
+                rem_keys.extend(f.keys().iter().copied().filter(|&k| k != key));
+            }
+            rem_keys.sort_unstable();
+            rem_keys.dedup();
 
-            let marginal = Marginal::from(key, prior, &likelihood)?;
-
-            marginals.push(marginal);
+            let likelihood = Likelihood::eliminate(factors.iter().copied(), &[key], &rem_keys, ctx)
+                .with_context(|| format!("failed to eliminate around key {key}"))?;
+            marginals.push(Marginal::from(key, None, &likelihood)?);
         }
         Ok(marginals)
     }

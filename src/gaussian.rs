@@ -34,6 +34,14 @@ impl Layout {
         let i = self.keys.binary_search(&key).ok()?;
         Some((self.offsets[i], self.offsets[i + 1] - self.offsets[i]))
     }
+
+    fn max_block(&self) -> usize {
+        self.offsets
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug)]
@@ -124,12 +132,15 @@ impl<T: RealField> Likelihood<T> {
             .map(|(icol, ncols)| self.a.columns(icol, ncols))
     }
 
-    // pub fn layout(&self, key: &usize) -> Option<(usize, usize)> {
-    //     match self.keys.binary_search(key) {
-    //         Ok(i) => Some(self.layout[i]),
-    //         Err(_) => None,
-    //     }
-    // }
+    pub fn blocks(&self) -> impl Iterator<Item = (usize, DMatrixView<'_, T>)> {
+        self.layout.keys.iter().enumerate().map(move |(i, &key)| {
+            let (icol, ncols) = (
+                self.layout.offsets[i],
+                self.layout.offsets[i + 1] - self.layout.offsets[i],
+            );
+            (key, self.a.columns(icol, ncols))
+        })
+    }
 
     pub fn dim_x(&self) -> usize {
         self.a.ncols()
@@ -143,21 +154,24 @@ impl<T: RealField> Likelihood<T> {
     /// It is the caller responsability to check that the kept and cleared keys are compatible and valid with factors.
     /// This is equivalent to max-product and sum-product message passing for closing box.
     /// The likelihood factor is expressed with minimal observation dimension: if the total dimension of all input factors is larger than the total dimensions of the kept variables, the observation is expressed after projecting it in the kept variable space
-    pub fn from_closure<'a, C>(
-        factors: &[FactorRef<T>],
-        kept_keys: Vec<usize>,
-        cleared_keys: Vec<usize>,
-        size_of: C,
+    pub fn eliminate<'a, I>(
+        factors: I,
+        kept_keys: &[usize],
+        cleared_keys: &[usize],
+        size_of: impl Fn(usize) -> usize,
     ) -> Result<Likelihood<T>>
     where
-        C: Fn(usize) -> usize,
+        I: IntoIterator<Item = FactorView<'a, T>>,
+        I::IntoIter: Clone, // iterated multiple times
     {
         debug_assert!(cleared_keys.is_sorted(), "unsorted cleared keys");
         debug_assert!(kept_keys.is_sorted(), "unsorted kept keys");
 
-        for f in factors.iter() {
+        let factors = factors.into_iter();
+
+        for f in factors.clone() {
             match f {
-                FactorRef::Likelihood(f) => {
+                FactorView::Likelihood(f) => {
                     for key in f.keys() {
                         if let (Err(_), Err(_)) = (
                             kept_keys.binary_search(&key),
@@ -167,7 +181,7 @@ impl<T: RealField> Likelihood<T> {
                         }
                     }
                 }
-                FactorRef::Prior(f) => {
+                FactorView::Prior(f) => {
                     let key = f.key;
                     if let (Err(_), Err(_)) = (
                         kept_keys.binary_search(&key),
@@ -180,14 +194,14 @@ impl<T: RealField> Likelihood<T> {
         }
 
         // Compute dimensions and layout contexts
-        let kept_layout = Layout::new(kept_keys, &size_of);
-        let cleared_layout = Layout::new(cleared_keys, &size_of);
-        let (dim_x, dim_u) = (kept_layout.dim(), cleared_layout.dim());
+        let kept_layout = Layout::new(kept_keys.to_vec(), &size_of);
+        let cleared_layout = Layout::new(cleared_keys.to_vec(), &size_of);
+
         let dim_y = factors
-            .iter()
+            .clone()
             .map(|f| match f {
-                FactorRef::Likelihood(f) => f.dim_y(),
-                FactorRef::Prior(f) => {
+                FactorView::Likelihood(f) => f.dim_y(),
+                FactorView::Prior(f) => {
                     match kept_layout.find(f.key) {
                         Some(_) => f.dim_x(), // a prior on a kept variable is interpreted as a likelihood with identity matrix
                         None => 0,
@@ -195,52 +209,40 @@ impl<T: RealField> Likelihood<T> {
                 }
             })
             .sum();
-        //         let dim_y: usize = factors.iter().map(|f| match f {
-        //             FactorRef::Likelihood(l) => l.dim_y(),
-        //             FactorRef::Prior(_) => 0,
-        //         }).sum();
-        //         //
-        //         //
-        //         let mut kept_layout: Vec<(usize, usize)> = Vec::with_capacity(kept_keys.len());
-        //         let mut offset = 0;
-        //         for key in &kept_keys {
-        //             let size = ctx(*key);
-        //             kept_layout.push((offset, size));
-        //             offset += size;
-        //         }
-        //         let dim_x = offset;
-        //
-        //         let mut cleared_layout: Vec<(usize, usize)> = Vec::with_capacity(cleared_keys.len());
-        //         let mut offset = 0;
-        //         for key in &cleared_keys {
-        //             let size = ctx(*key);
-        //             cleared_layout.push((offset, size));
-        //             offset += size;
-        //         }
-        //         let dim_u = offset;
-        //
-        //         // Compute total observation dimension
 
         // branch on the minimal observation model
-        if dim_y <= dim_x {
-            Self::from_closure_on_z(factors, kept_layout, cleared_layout, dim_x, dim_u, dim_y)
+        if dim_y <= kept_layout.dim() {
+            Self::eliminate_to_z(factors, kept_layout, cleared_layout, dim_y)
         } else {
-            Self::from_closure_on_x(factors, kept_layout, cleared_layout, dim_x, dim_u, dim_y)
+            let max_dim_y = factors
+                .clone()
+                .map(|f| match f {
+                    FactorView::Likelihood(f) => f.dim_y(),
+                    FactorView::Prior(f) => {
+                        match kept_layout.find(f.key) {
+                            Some(_) => f.dim_x(), // a prior on a kept variable is interpreted as a likelihood with identity matrix
+                            None => 0,
+                        }
+                    }
+                })
+                .max()
+                .unwrap_or(0);
+            Self::eliminate_to_x(factors, kept_layout, cleared_layout, max_dim_y)
         }
     }
 
-    fn from_closure_on_z(
-        factors: &[FactorRef<T>],
+    fn eliminate_to_z<'a>(
+        factors: impl Iterator<Item = FactorView<'a, T>>,
         kept_layout: Layout,
         cleared_layout: Layout,
-        dim_x: usize,
-        dim_u: usize,
         dim_y: usize,
     ) -> Result<Likelihood<T>> {
+        let (dim_x, dim_u) = (kept_layout.dim(), cleared_layout.dim());
+
         let mut a = DMatrix::zeros(dim_y, dim_x);
         let mut xiby = DVector::zeros(dim_y);
         let mut wby = DMatrix::zeros(dim_y, dim_y);
-        let mut wby_b = DMatrix::zeros(dim_y, dim_u);
+        let mut bt_wby = DMatrix::zeros(dim_u, dim_y);
 
         let mut xifu_plus_bt_xiby = DVector::zeros(dim_u);
         let mut wfu_plus_bt_wby_b = DMatrix::zeros(dim_u, dim_u);
@@ -249,7 +251,7 @@ impl<T: RealField> Likelihood<T> {
 
         for f in factors {
             match f {
-                FactorRef::Prior(f) => {
+                FactorView::Prior(f) => {
                     let key = f.key;
                     if let Some((x_pos, x_size)) = kept_layout.find(key) {
                         let y_size = f.dim_x();
@@ -279,7 +281,7 @@ impl<T: RealField> Likelihood<T> {
                         bail!("prior key {key} is neither kept nor cleared");
                     }
                 }
-                FactorRef::Likelihood(f) => {
+                FactorView::Likelihood(f) => {
                     let y_size = f.dim_y();
 
                     // update xiby
@@ -290,42 +292,35 @@ impl<T: RealField> Likelihood<T> {
                     let mut tmp = wby.view_mut((y_pos, y_pos), (y_size, y_size));
                     tmp.copy_from(&f.wby);
 
-                    for &key in f.keys() {
+                    for (key, mat_view) in f.blocks() {
                         if let Some((x_pos, x_size)) = kept_layout.find(key) {
-                            if let Some(a_view) = f.a_from_key(key) {
-                                // update a
-                                a.view_mut((y_pos, x_pos), (y_size, x_size))
-                                    .copy_from(&a_view);
-                            }
+                            // update a
+                            a.view_mut((y_pos, x_pos), (y_size, x_size))
+                                .copy_from(&mat_view);
+                            // }
                         } else if let Some((u_pos, u_size)) = cleared_layout.find(key) {
-                            if let Some(b_view) = f.a_from_key(key) {
-                                // update wby_b
-                                let mut tmp = wby_b.view_mut((y_pos, u_pos), (y_size, u_size));
-                                tmp.gemm(T::one(), &f.wby, &b_view, T::one());
+                            // update bt_wby
+                            let mut tmp = bt_wby.view_mut((u_pos, y_pos), (u_size, y_size));
+                            tmp.gemm_tr(T::one(), &mat_view, &f.wby, T::one());
 
-                                // update xifu_plus_bt_xiby
-                                let mut tmp = xifu_plus_bt_xiby.rows_mut(u_pos, u_size);
-                                tmp.gemv_tr(T::one(), &b_view, &f.xiby, T::one());
+                            // update xifu_plus_bt_xiby
+                            let mut tmp = xifu_plus_bt_xiby.rows_mut(u_pos, u_size);
+                            tmp.gemv_tr(T::one(), &mat_view, &f.xiby, T::one());
 
-                                // update wfu_plus_bt_wby_b (only the lower triangular part)
-                                for &other_key in f.keys() {
-                                    if other_key >= key
-                                        && let Some((u_other_pos, u_other_size)) =
-                                            cleared_layout.find(other_key)
-                                    {
-                                        if let Some(b_view_other) = f.a_from_key(other_key) {
-                                            let mut tmp = wfu_plus_bt_wby_b.view_mut(
-                                                (u_other_pos, u_pos),
-                                                (u_other_size, u_size),
-                                            );
-                                            tmp.gemm_tr(
-                                                T::one(),
-                                                &b_view_other,
-                                                &wby_b.view((y_pos, u_pos), (y_size, u_size)),
-                                                T::one(),
-                                            );
-                                        }
-                                    }
+                            // update wfu_plus_bt_wby_b (only the lower triangular part)
+                            for (other_key, other_mat_view) in f.blocks() {
+                                if other_key >= key
+                                    && let Some((u_other_pos, u_other_size)) =
+                                        cleared_layout.find(other_key)
+                                {
+                                    let mut tmp = wfu_plus_bt_wby_b
+                                        .view_mut((u_other_pos, u_pos), (u_other_size, u_size));
+                                    tmp.gemm(
+                                        T::one(),
+                                        &bt_wby.view((u_pos, y_pos), (u_size, y_size)),
+                                        &other_mat_view,
+                                        T::one(),
+                                    );
                                 }
                             }
                         } else {
@@ -342,7 +337,7 @@ impl<T: RealField> Likelihood<T> {
             .with_context(|| format!("Cholesky failed: cleared variables are under-constrained. Consider adding dumb priors for variables {:?}", cleared_layout.keys))?;
         let l = chol_wfu_plus_bt_wby_b.l_dirty();
 
-        let mut g = wby_b.transpose();
+        let mut g = bt_wby;
         let mut h = xifu_plus_bt_xiby;
         ensure!(
             l.solve_lower_triangular_mut(&mut g) && l.solve_lower_triangular_mut(&mut h),
@@ -362,37 +357,36 @@ impl<T: RealField> Likelihood<T> {
     /// kept_keys must be sorted and aligned with kept_layout
     /// cleared_keys must be sorted and aligned with cleared_layout
     /// it is the user responsability to ensure it is the case
-    fn from_closure_on_x(
-        factors: &[FactorRef<T>],
+    fn eliminate_to_x<'a>(
+        factors: impl Iterator<Item = FactorView<'a, T>>,
         kept_layout: Layout,
         cleared_layout: Layout,
-        dim_x: usize,
-        dim_u: usize,
-        dim_y: usize,
+        max_dim_y: usize,
     ) -> Result<Likelihood<T>> {
-        let mut wby_a = DMatrix::zeros(dim_y, dim_x); // used for cross product terms in at_wby_a and bt_wby_a
-        let mut wby_b = DMatrix::zeros(dim_y, dim_u); // used for cross product terms in wfu_plus_bt_wby_b
+        let (dim_x, dim_u) = (kept_layout.dim(), cleared_layout.dim());
+        let mut scratch = DMatrix::zeros(
+            kept_layout.max_block().max(cleared_layout.max_block()),
+            max_dim_y,
+        ); // for temporary bt_wby and at_wby
+
         let mut at_xiby = DVector::zeros(dim_x);
-        let mut at_wby_a = DMatrix::zeros(dim_x, dim_x); // note: only the lower triangular part is valid
+        let mut at_wby_a = DMatrix::zeros(dim_x, dim_x);
         let mut bt_wby_a = DMatrix::zeros(dim_u, dim_x);
         let mut xifu_plus_bt_xiby = DVector::zeros(dim_u);
         let mut wfu_plus_bt_wby_b = DMatrix::zeros(dim_u, dim_u); // note: only lower triangular part is valid
 
-        let mut y_pos = 0;
         for f in factors {
             match f {
-                FactorRef::Prior(f) => {
+                FactorView::Prior(f) => {
                     let key = f.key;
                     if let Some((x_pos, x_size)) = kept_layout.find(key) {
                         // update at_xiby
                         let mut tmp = at_xiby.rows_mut(x_pos, x_size);
-                        tmp.copy_from(&f.xifx);
+                        tmp += &f.xifx;
 
                         // update at_wby_a (no need to use wby_a since there is no cross-product terms in a prior)
                         let mut tmp = at_wby_a.view_mut((x_pos, x_pos), (x_size, x_size));
-                        tmp.copy_from(&f.wfx);
-
-                        y_pos += x_size;
+                        tmp += &f.wfx;
                     } else if let Some((u_pos, u_size)) = cleared_layout.find(key) {
                         // update xifu_plus_bt_xiby
                         let mut tmp = xifu_plus_bt_xiby.rows_mut(u_pos, u_size);
@@ -405,91 +399,61 @@ impl<T: RealField> Likelihood<T> {
                         bail!("prior key {key} is neither kept nor cleared");
                     }
                 }
-                FactorRef::Likelihood(f) => {
+                FactorView::Likelihood(f) => {
                     let y_size = f.dim_y();
 
-                    for &key in f.keys() {
+                    for (key, mat_view) in f.blocks() {
                         if let Some((x_pos, x_size)) = kept_layout.find(key) {
-                            if let Some(a_view) = f.a_from_key(key) {
-                                // update at_xiby
-                                let mut tmp = at_xiby.rows_mut(x_pos, x_size);
-                                tmp.gemv_tr(T::one(), &a_view, &f.xiby, T::one());
+                            // update at_xiby
+                            let mut tmp = at_xiby.rows_mut(x_pos, x_size);
+                            tmp.gemv_tr(T::one(), &mat_view, &f.xiby, T::one());
 
-                                // update wby_a
-                                let mut tmp = wby_a.view_mut((y_pos, x_pos), (y_size, x_size));
-                                tmp.gemm(T::one(), &f.wby, &a_view, T::one());
+                            // setup at_wby
+                            let mut at_wby = scratch.view_mut((0, 0), (x_size, y_size));
+                            at_wby.gemm_tr(T::one(), &mat_view, &f.wby, T::zero());
 
-                                for &other_key in f.keys() {
-                                    if other_key >= key
-                                        && let Some((x_other_pos, x_other_size)) =
-                                            kept_layout.find(other_key)
-                                    {
-                                        if let Some(a_view_other) = f.a_from_key(other_key) {
-                                            // update at_wby_a (only lower triangular part)
-                                            let mut tmp = at_wby_a.view_mut(
-                                                (x_other_pos, x_pos),
-                                                (x_other_size, x_size),
-                                            );
-                                            tmp.gemm_tr(
-                                                T::one(),
-                                                &a_view_other,
-                                                &wby_a.view((y_pos, x_pos), (y_size, x_size)),
-                                                T::one(),
-                                            );
-                                        }
-                                    } else if let Some((u_other_pos, u_other_size)) =
-                                        cleared_layout.find(other_key)
-                                    {
-                                        if let Some(b_view_other) = f.a_from_key(other_key) {
-                                            // update bt_wby_a
-                                            let mut tmp = bt_wby_a.view_mut(
-                                                (u_other_pos, x_pos),
-                                                (u_other_size, x_size),
-                                            );
-                                            tmp.gemm_tr(
-                                                T::one(),
-                                                &b_view_other,
-                                                &wby_a.view((y_pos, x_pos), (y_size, x_size)),
-                                                T::one(),
-                                            );
-                                        }
-                                    }
+                            for (other_key, other_mat_view) in f.blocks() {
+                                if let Some((x_other_pos, x_other_size)) =
+                                    kept_layout.find(other_key)
+                                    && other_key <= key
+                                {
+                                    // update at_wby_a (only lower triangular part)
+                                    let mut tmp = at_wby_a
+                                        .view_mut((x_pos, x_other_pos), (x_size, x_other_size));
+                                    tmp.gemm(T::one(), &at_wby, &other_mat_view, T::one());
                                 }
                             }
                         } else if let Some((u_pos, u_size)) = cleared_layout.find(key) {
-                            if let Some(b_view) = f.a_from_key(key) {
-                                // update wby_b
-                                let mut tmp = wby_b.view_mut((y_pos, u_pos), (y_size, u_size));
-                                tmp.gemm(T::one(), &f.wby, &b_view, T::one());
+                            // update xifu_plus_bt_xiby
+                            let mut tmp = xifu_plus_bt_xiby.rows_mut(u_pos, u_size);
+                            tmp.gemv_tr(T::one(), &mat_view, &f.xiby, T::one());
 
-                                // update xifu_plus_bt_xiby
-                                let mut tmp = xifu_plus_bt_xiby.rows_mut(u_pos, u_size);
-                                tmp.gemv_tr(T::one(), &b_view, &f.xiby, T::one());
+                            // setup bt_wby
+                            let mut bt_wby = scratch.view_mut((0, 0), (u_size, y_size));
+                            bt_wby.gemm_tr(T::one(), &mat_view, &f.wby, T::zero());
 
-                                // update wfu_plus_bt_wby_b (only the lower triangular part)
-                                for &other_key in f.keys() {
-                                    if other_key >= key
-                                        && let Some((u_other_pos, u_other_size)) =
-                                            cleared_layout.find(other_key)
-                                    {
-                                        if let Some(b_view_other) = f.a_from_key(other_key) {
-                                            let mut tmp = wfu_plus_bt_wby_b.view_mut(
-                                                (u_other_pos, u_pos),
-                                                (u_other_size, u_size),
-                                            );
-                                            tmp.gemm_tr(
-                                                T::one(),
-                                                &b_view_other,
-                                                &wby_b.view((y_pos, u_pos), (y_size, u_size)),
-                                                T::one(),
-                                            );
-                                        }
-                                    }
+                            for (other_key, other_mat_view) in f.blocks() {
+                                if let Some((x_other_pos, x_other_size)) =
+                                    kept_layout.find(other_key)
+                                {
+                                    // update bt_wby_a
+                                    let mut tmp = bt_wby_a
+                                        .view_mut((u_pos, x_other_pos), (u_size, x_other_size));
+                                    tmp.gemm(T::one(), &bt_wby, &other_mat_view, T::one());
+                                } else if let Some((u_other_pos, u_other_size)) =
+                                    cleared_layout.find(other_key)
+                                    && other_key <= key
+                                {
+                                    // update wfu_plus_bt_wby_b (only the lower triangular part)
+                                    let mut tmp = wfu_plus_bt_wby_b
+                                        .view_mut((u_pos, u_other_pos), (u_size, u_other_size));
+                                    tmp.gemm(T::one(), &bt_wby, &other_mat_view, T::one());
                                 }
                             }
+                        } else {
+                            bail!("likelihood key {key} is neither kept nor cleared");
                         }
                     }
-                    y_pos += y_size;
                 }
             }
         }
@@ -522,40 +486,62 @@ pub enum Factor<T: RealField> {
     Likelihood(Likelihood<T>),
 }
 
+// `Factor` delegates to `FactorView`.
 impl<T: RealField> Factor<T> {
     pub fn keys(&self) -> &[usize] {
-        match self {
-            Self::Prior(f) => f.keys(),
-            Self::Likelihood(f) => f.keys(),
-        }
+        FactorView::from(self).keys()
     }
 
     pub fn has_key(&self, key: usize) -> bool {
-        match self {
-            Self::Prior(f) => f.has_key(key),
-            Self::Likelihood(f) => f.has_key(key),
-        }
+        FactorView::from(self).has_key(key)
     }
 }
 
-pub enum FactorRef<'a, T: RealField> {
+pub enum FactorView<'a, T: RealField> {
     Prior(&'a Prior<T>),
     Likelihood(&'a Likelihood<T>),
 }
 
-impl<'a, T: RealField> FactorRef<'a, T> {
-    pub fn keys(&self) -> &[usize] {
+impl<'a, T: RealField> FactorView<'a, T> {
+    /// Sorted keys the factor depends on.
+    pub fn keys(self) -> &'a [usize] {
         match self {
-            Self::Prior(f) => f.keys(),
-            Self::Likelihood(f) => f.keys(),
+            Self::Prior(p) => p.keys(),
+            Self::Likelihood(l) => l.keys(),
         }
     }
 
-    pub fn has_key(&self, key: usize) -> bool {
-        match self {
-            Self::Prior(f) => f.has_key(key),
-            Self::Likelihood(f) => f.has_key(key),
+    pub fn has_key(self, key: usize) -> bool {
+        self.keys().binary_search(&key).is_ok()
+    }
+}
+
+impl<T: RealField> Clone for FactorView<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: RealField> Copy for FactorView<'_, T> {}
+
+impl<'a, T: RealField> From<&'a Factor<T>> for FactorView<'a, T> {
+    fn from(f: &'a Factor<T>) -> Self {
+        match f {
+            Factor::Prior(p) => FactorView::Prior(p),
+            Factor::Likelihood(l) => FactorView::Likelihood(l),
         }
+    }
+}
+
+impl<'a, T: RealField> From<&'a Prior<T>> for FactorView<'a, T> {
+    fn from(p: &'a Prior<T>) -> Self {
+        FactorView::Prior(p)
+    }
+}
+
+impl<'a, T: RealField> From<&'a Likelihood<T>> for FactorView<'a, T> {
+    fn from(l: &'a Likelihood<T>) -> Self {
+        FactorView::Likelihood(l)
     }
 }
 
@@ -841,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn test_likelihood_from_closure() {
+    fn test_likelihood_eliminate() {
         let sizes = vec![2, 2, 3, 2, 1];
         let size_of = |k| sizes[k];
 
@@ -886,14 +872,14 @@ mod tests {
         };
 
         let factors = vec![
-            FactorRef::Prior(&f0),
-            FactorRef::Likelihood(&f1),
-            FactorRef::Likelihood(&f2),
+            FactorView::Prior(&f0),
+            FactorView::Likelihood(&f1),
+            FactorView::Likelihood(&f2),
         ];
         let kept_keys = vec![0, 1, 3];
         let cleared_keys = vec![2, 4];
         let new_factor =
-            Likelihood::from_closure(&factors, kept_keys, cleared_keys, size_of).unwrap();
+            Likelihood::eliminate(factors, &kept_keys, &cleared_keys, size_of).unwrap();
 
         assert_eq!(new_factor.keys(), [0, 1, 3]);
         assert!(new_factor.dim_y() <= new_factor.dim_x());
@@ -913,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_likelihood_from_closure_loop() {
+    fn test_likelihood_eliminate_loop() {
         let sizes = vec![1, 1, 1];
         let size_of = |k| sizes[k];
 
@@ -944,10 +930,10 @@ mod tests {
         };
 
         let factors = vec![
-            FactorRef::Prior(&f0),
-            FactorRef::Likelihood(&f1),
-            FactorRef::Likelihood(&f2),
-            FactorRef::Likelihood(&f3),
+            FactorView::Prior(&f0),
+            FactorView::Likelihood(&f1),
+            FactorView::Likelihood(&f2),
+            FactorView::Likelihood(&f3),
         ];
         let kept_keys = vec![0];
         let cleared_keys = vec![1, 2];
@@ -955,7 +941,7 @@ mod tests {
         // the total observation dimension is larger than the total dimension of the kept variables
         // the factor should close a
         let new_factor =
-            Likelihood::from_closure(&factors, kept_keys, cleared_keys, size_of).unwrap();
+            Likelihood::eliminate(factors, &kept_keys, &cleared_keys, size_of).unwrap();
 
         assert!(new_factor.dim_y() <= new_factor.dim_x());
         assert_eq!(new_factor.keys(), [0]);
@@ -963,4 +949,9 @@ mod tests {
         assert!((new_factor.xiby[0] - -0.051724137931034475f64).abs() < 1e-9);
         assert!((new_factor.wby[0] - 0.8965517241379309f64).abs() < 1e-9);
     }
+
+    // further test:
+    // Branch equivalence: run the same inputs through eliminate_to_z and eliminate_to_x, then compare Aᵀξ and AᵀWA. Use blocks of different sizes (for example 2 and 3), since equal sizes would hide the transposition bug.
+    // Scalar sanity case: one likelihood y = x + u with W = w, and a prior on u with precision p. The expected result is Λ'_xx = wp/(w+p).
+    // Edge cases: no cleared keys, a prior on a kept key plus a likelihood on the same key, and a prior on a cleared key.
 }

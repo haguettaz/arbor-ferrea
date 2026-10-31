@@ -1,11 +1,8 @@
 # 🦀 arbor-ferrea
 
-A Rust solver for sparse linear least-squares problems, built around tree-structured Gaussian factor graphs.
+A Rust solver for sparse linear least-squares problems, built around Gaussian factor graphs.
 
-The crate resolves cyclic graphs by sequentially eliminating variables (max-product message passing) to form a rooted computation tree. 
-This implements the upward-filtering / downward-deciding framework detailed in the *Model-Based Estimation and Signal Analysis* [lecture notes](https://doi.org/10.3929/ethz-c-000785981) (Prof. Loeliger, ETH Zürich).
-
-Dense matrix operations rely on [`nalgebra`](https://docs.rs/nalgebra/latest/nalgebra/index.html), with support for sequential and parallel ([`rayon`](https://docs.rs/rayon/latest/rayon/)) tree passes.
+Dense matrix operations rely on [`nalgebra`](https://docs.rs/nalgebra/latest/nalgebra/index.html).
 
 > This project is under active research and development; the API is subject to change. If you need a mature, general-purpose factor-graph optimization library in Rust today, check out [`factrs`](https://docs.rs/factrs/latest/factrs/index.html).
 
@@ -19,71 +16,116 @@ cargo add arbor-ferrea
 
 ```rust
 use anyhow::Result;
-use arbor_ferrea::ui::*;
+
+use arbor_ferrea::gaussian::*;
+use arbor_ferrea::solver::*;
+
+const X1: Symbol = Symbol('x', 1);
+const X2: Symbol = Symbol('x', 2);
+const X3: Symbol = Symbol('x', 3);
+const L1: Symbol = Symbol('l', 1);
+const L2: Symbol = Symbol('l', 2);
 
 fn main() -> Result<()> {
-    // initialize an empty factor graph
-    let mut factor_graph = GaussianFactorGraph::new();
-    
-    // register variables: (symbol, dimension)
-    let x1 = factor_graph.add_variable(VarSymbol('x', 1), 1)?;
-    let x2 = factor_graph.add_variable(VarSymbol('x', 2), 1)?;
-    
-    // prior factor on x1: x1 ~ N(0.0, 1.0)
-    factor_graph.add_factor(
-        vec![x1],
-        vec![dmatrix![1.0]],       // Measurement matrix A
-        dvector![0.0],             // Mean / measurement
-        dmatrix![1.0],             // Information / weight matrix W
-    )?;
-    
-    // odometry factor between x1 and x2: x2 - x1 ~ N(2.0, 1.0)
-    factor_graph.add_factor(
-        vec![x1, x2],
-        vec![dmatrix![-1.0], dmatrix![1.0]], // [-I, I]
-        dvector![2.0],
-        dmatrix![1.0],
-    )?;
-    
-    // build symbolic computation tree along elimination order
-    let order = [x1, x2];
-    let symb_tree = factor_graph.build_symbolic_tree(&order)?;
-    
-    // sequential solve
-    let solution = factor_graph.solve_seq(&symb_tree)?;
-    // or in parallel: factor_graph.solve_par(&symb_tree)?;
-    
-    println!("x1: {:?}", factor_graph.value(x1).unwrap());
-    println!("x2: {:?}", factor_graph.value(x2).unwrap());
-    
-    Ok(())
+
+    let mut factor_graph = FactorGraph::new();
+
+    let x1 = factor_graph.add_variable(X1, 3).unwrap();
+    let x2 = factor_graph.add_variable(X2, 3).unwrap();
+    let x3 = factor_graph.add_variable(X3, 3).unwrap();
+    let l1 = factor_graph.add_variable(L1, 2).unwrap();
+    let l2 = factor_graph.add_variable(L2, 2).unwrap();
+
+    factor_graph
+        .add_prior(
+            x1,
+            dvector![0.6, 0.6, 0.6],
+            dmatrix![
+                1.0, 0.0, 0.0;
+                0.0, 1.0, 0.0;
+                0.0, 0.0, 1.0
+            ],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x1, x2],
+            dmatrix![
+                1.0, 0.0, 0.0, -1.0, 0.0, 0.0;
+                0.0, 1.0, 0.0, 0.0, -1.0, 0.0;
+                0.0, 0.0, 1.0, 0.0, 0.0, -1.0
+            ],
+            dvector![0.2, 1.0, -0.5],
+            dmatrix![
+                1.0, 0.2, 0.0;
+                0.2, 1.0, 0.0;
+                0.0, 0.0, 1.0
+            ],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x2, x3],
+            dmatrix![
+                1.0, 0.0, 0.0, -1.0, 0.0, 0.0;
+                0.0, 1.0, 0.0, 0.0, -1.0, 0.0;
+                0.0, 0.0, 1.0, 0.0, 0.0, -1.0
+            ],
+            dvector![-0.1, 0.8, 0.1],
+            dmatrix![
+                1.0, 0.0, 0.3;
+                0.0, 1.0, 0.1;
+                0.3, 0.1, 1.0
+            ],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x1, l1],
+            dmatrix![
+                0.5, 0.5, 0.0, -1.0, 0.0;
+                0.0, 0.7, 0.2, 0.0, -1.0
+            ],
+            dvector![0.0, 0.5],
+            dmatrix![
+                1.0, 0.2;
+                0.2, 1.0
+            ],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x2, l1],
+            dmatrix![
+                    0.6, 0.4, 0.0, -0.5, -0.5;
+                    0.1, 0.8, 0., 0.0, -0.8
+            ],
+            dvector![0.1, 0.2],
+            dmatrix![
+                0.8, 0.1;
+                0.1, 1.0
+            ],
+        )
+        .unwrap();
+    factor_graph
+        .add_observation(
+            vec![x3, l2],
+            dmatrix![
+                    0.6, 0.4, 0.0, -0.5, -0.5;
+                    0.1, 0.8, 0.0, 0.0, -0.8
+            ],
+            dvector![0.8, 0.0],
+            dmatrix![
+                2.0, 0.2;
+                0.2, 2.0
+            ],
+        )
+        .unwrap();
+
+    let smoother = Smoother::new(factor_graph);
+    let marginals = smoother.run()?;
 }
 ```
-
-
-## 🗺️ Roadmap & Features
-
-### Symbolic and Numeric Trees
-- [x] Sequential build and solve
-- [x] Parallel build and solve
-- [ ] Variable elimination heuristics (COLAMD / Constrained COLAMD)
-- [ ] Efficient updates (same tree structure but new data)
-- [ ] Incremental updates (extend tree structure)
-- [ ] Tree cut
-
-### Gaussian Tree
-- [x] Sequential build and solve
-- [x] Parallel build and solve
-- [ ] Variable elimination heuristics (COLAMD / Constrained COLAMD)
-- [ ] Efficient updates (same tree structure but new data)
-- [ ] Incremental updates (extend tree structure)
-- [ ] Tree cut
- 
-### Robust Estimation & Factors
-- [ ] NUP integration, e.g., Huber kernel
-
-### User Interface
-- [x] Safe Gaussian factor graph construction
 
 ## 📚 References
 
