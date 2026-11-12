@@ -55,10 +55,5 @@ rust-project.json
 
 report/*
 !report/report.pdf
-# !report/report.md
-# notes.md
-# notes.txt
-# notes.rs
-# notes.tex
 
 */old-*
